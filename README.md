@@ -23,9 +23,12 @@ zone", where a plain threshold match might be wrong.
 pip install cacheverifier
 # with the GPTCache adapter:
 pip install "cacheverifier[gptcache]"
+# with the offline Health Check (adds torch + sentence-transformers):
+pip install "cacheverifier[healthcheck]"
 ```
 
-Requires Python 3.9+. The only runtime dependency is `httpx`.
+Requires Python 3.9+. The only runtime dependency is `httpx` — the extras above
+are opt-in.
 
 ## Quickstart
 
@@ -94,6 +97,41 @@ if job.get("result_model_version"):
 
 `cv.dry_run([...])` reports the same baseline-vs-tuned AUC on examples you pass directly,
 without writing anything or deploying a model.
+
+## Local Health Check (offline)
+
+`cv.dry_run()` still uploads your examples to the API. If that's a blocker — a
+compliance review, or just not wanting production traffic to leave your network —
+run the identical stock-vs-fine-tuned evaluation entirely on your own machine:
+
+```bash
+pip install "cacheverifier[healthcheck]"
+
+cacheverifier healthcheck traffic.jsonl
+cacheverifier healthcheck traffic.jsonl --emit-summary summary.json
+```
+
+`traffic.jsonl` is a JSON array or JSONL of `{"query", "candidate_answer", "was_correct"}`
+rows **in arrival order** (the train/calibrate/test split is chronological, matching the
+hosted service so the numbers are comparable). Optional per row: `"stale": true`.
+
+Nothing is sent anywhere — the base model downloads once from Hugging Face, then it's
+fully offline. `--emit-summary` writes an aggregate-only JSON file (AUCs, counts, rates —
+no query or answer text) that's safe to share for a human read.
+
+```
+results
+------------------------------------------------------------------
+  train / calibrate / test:         3349 / 419 / 419
+  stock verifier   held-out AUC:    0.6120
+  fine-tuned       held-out AUC:    0.7080   (delta +0.0960)
+  label-noise proxy (disagreement): 11.4%
+  ceiling status:                   still_improvable
+
+verdict
+------------------------------------------------------------------
+  IMPROVED   -- fine-tuning on your own data helps this traffic
+```
 
 ## API surface
 
