@@ -1,5 +1,9 @@
 # cacheverifier
 
+[![CI](https://github.com/imxinchengyou/cacheverifier-python/actions/workflows/ci.yml/badge.svg)](https://github.com/imxinchengyou/cacheverifier-python/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/cacheverifier)](https://pypi.org/project/cacheverifier/)
+[![Python](https://img.shields.io/pypi/pyversions/cacheverifier)](https://pypi.org/project/cacheverifier/)
+
 Python client for **[CacheVerifier](https://www.cacheverifier.com)** — a hosted API that
 verifies semantic-cache hits. Given a query and a candidate cached answer, it approves or
 rejects serving that answer from cache, so a similarity match that is *close but wrong*
