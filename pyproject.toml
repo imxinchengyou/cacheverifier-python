@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cacheverifier"
+version = "0.1.0"
+description = "Python client for the hosted CacheVerifier semantic-cache verification API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Chengyou Xin" }]
+keywords = [
+    "semantic-cache",
+    "semantic-cache-verification",
+    "llm",
+    "llm-caching",
+    "gptcache",
+    "cache-verification",
+    "cross-encoder",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = ["httpx>=0.24"]
+
+[project.urls]
+Homepage = "https://www.cacheverifier.com"
+Documentation = "https://www.cacheverifier.com/docs"
+Source = "https://github.com/imxinchengyou/cacheverifier-python"
+Research = "https://github.com/imxinchengyou/CacheVerifier"
+
+[project.optional-dependencies]
+gptcache = ["gptcache>=0.1.30"]
+dev = ["pytest>=7", "mypy>=1.5", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cacheverifier"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+# PYI034 wants `Self` as the __enter__ return type; not available on the
+# 3.9 floor without a typing_extensions dependency this client doesn't need.
+ignore = ["PYI034"]
+
+[tool.mypy]
+python_version = "3.10"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = "gptcache.*"
+ignore_missing_imports = true
