@@ -24,6 +24,27 @@ jobs:
       - run: mypy cacheverifier
         if: matrix.python-version != '3.9'  # mypy config targets 3.10+
 
+  # `cacheverifier healthcheck` -- the base `test` job above installs only
+  # `.[dev]`, so it exercises the CLI dispatch and the missing-extra path;
+  # this job installs `.[healthcheck,dev]` and runs the real fine-tune
+  # end-to-end. One Python version is enough (the training path isn't
+  # version-sensitive) and CPU-only torch keeps the install lean -- the
+  # default wheel drags in ~3 GB of unused CUDA libraries whose import-time
+  # mmap alone can OOM a small runner.
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[healthcheck,dev]"
+      - run: ruff check .
+      - run: mypy cacheverifier
+      - run: pytest -q tests/test_healthcheck.py
+
   build:
     runs-on: ubuntu-latest
     steps:

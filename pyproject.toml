@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cacheverifier"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python client for the hosted CacheVerifier semantic-cache verification API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -29,6 +29,9 @@ classifiers = [
 ]
 dependencies = ["httpx>=0.24"]
 
+[project.scripts]
+cacheverifier = "cacheverifier.__main__:main"
+
 [project.urls]
 Homepage = "https://www.cacheverifier.com"
 Documentation = "https://www.cacheverifier.com/docs"
@@ -37,6 +40,20 @@ Research = "https://github.com/imxinchengyou/CacheVerifier"
 
 [project.optional-dependencies]
 gptcache = ["gptcache>=0.1.30"]
+# `cacheverifier healthcheck` -- runs the hosted Health Check Report's
+# stock-vs-fine-tuned evaluation locally. Deliberately NOT a base
+# dependency: torch + sentence-transformers dwarf the httpx-only client.
+# sentence-transformers is pinned <4 for the pre-4.0 CrossEncoder.fit()
+# API this uses (the >=4 line needs torch>=2.4, which drops older Pythons).
+# Effectively wants Python >=3.10.
+healthcheck = [
+    # numpy <2: the torch builds these versions pull are compiled against
+    # the numpy 1.x ABI ("Failed to initialize NumPy: _ARRAY_API not found"
+    # on numpy 2). Same constraint the hosted service uses.
+    "numpy>=1.26,<2",
+    "torch>=2.2",
+    "sentence-transformers>=3.0,<4",
+]
 dev = ["pytest>=7", "mypy>=1.5", "ruff>=0.4"]
 
 [tool.hatch.build.targets.wheel]
@@ -59,4 +76,12 @@ warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
 module = "gptcache.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The healthcheck extra's deps: not installed in the base test/type-check
+# env (CI runs `pip install -e ".[dev]"`, not `[dev,healthcheck]`), and the
+# `_healthcheck` subpackage is only importable when that extra is present
+# anyway. numpy ships inline types but only when installed.
+module = ["torch.*", "sentence_transformers.*", "numpy.*"]
 ignore_missing_imports = true
