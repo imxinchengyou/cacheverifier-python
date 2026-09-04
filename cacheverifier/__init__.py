@@ -18,5 +18,5 @@ Research behind it: https://github.com/imxinchengyou/CacheVerifier
 
 from cacheverifier.client import CacheVerifier, CacheVerifierError, VerifyResult
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["CacheVerifier", "CacheVerifierError", "VerifyResult", "__version__"]

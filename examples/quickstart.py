@@ -28,10 +28,15 @@ def main() -> None:
     query = "how do I cancel my subscription"
     candidate = "Go to Settings > Billing > Pause subscription for a month."
 
+    # verify() sits on your request path: it uses a 1s timeout and, if the
+    # service is unreachable, returns a degraded result (approved=False here)
+    # instead of raising. Pass fail_open=True to serve the cached answer in
+    # that case instead.
     with CacheVerifier(api_key=api_key) as cv:
         result = cv.verify(query, candidate)
         print(f"verify -> approved={result.approved} score={result.score:.3f} "
-              f"threshold={result.threshold} model={result.model_version}")
+              f"threshold={result.threshold} model={result.model_version} "
+              f"degraded={result.degraded}")
 
         if result.approved:
             answer = candidate
