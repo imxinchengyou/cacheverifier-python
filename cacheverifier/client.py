@@ -8,6 +8,7 @@ might be wrong. See https://www.cacheverifier.com/docs for the full API.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -15,9 +16,30 @@ from typing import Any
 import httpx
 
 DEFAULT_BASE_URL = "https://www.cacheverifier.com"
+#: Timeout for control-plane calls (feedback, fine-tuning, monitoring, usage).
+#: These are not on your request path, so they get room to breathe.
 DEFAULT_TIMEOUT = 10.0
+#: Timeout for ``verify()`` / ``verify_batch()`` -- these ARE on your request
+#: path. Warm calls are tens of milliseconds server-side; 1s leaves headroom
+#: for the network round trip and a cold model load after a deploy while still
+#: bounding the damage when the service is actually unreachable.
+DEFAULT_VERIFY_TIMEOUT = 1.0
 
-__all__ = ["CacheVerifier", "CacheVerifierError", "VerifyResult"]
+#: model_version on a synthetic result returned when the verify call itself
+#: failed (timeout / connection error / 5xx) and the client fell back.
+VERIFY_UNAVAILABLE = "verify_unavailable"
+
+_log = logging.getLogger(__name__)
+
+__all__ = [
+    "DEFAULT_BASE_URL",
+    "DEFAULT_TIMEOUT",
+    "DEFAULT_VERIFY_TIMEOUT",
+    "VERIFY_UNAVAILABLE",
+    "CacheVerifier",
+    "CacheVerifierError",
+    "VerifyResult",
+]
 
 
 class CacheVerifierError(RuntimeError):
@@ -41,9 +63,15 @@ class VerifyResult:
     - `score`: the verifier's raw score for this pair; `approved` is `score >= threshold`.
     - `threshold`: the cutoff this call was decided against (tenant-specific once
       you've fine-tuned; 0.0 on the shared stock model).
-    - `model_version`: `"stock"`, `"v<id>"` for a fine-tuned model, or
-      `"cold_start_fail_closed"` when no model ran (see `cold_start_mode`).
+    - `model_version`: `"stock"`, `"v<id>"` for a fine-tuned model,
+      `"cold_start_fail_closed"` / `"cold_start_auto_pending"` when no model ran
+      (see `cold_start_mode`), or `"verify_unavailable"` on a synthetic
+      fallback result (see `degraded`).
     - `latency_ms`: server-side model inference time, not round-trip time.
+    - `degraded`: True when the verify call failed (timeout / connection error /
+      5xx) and this result was synthesized by the client rather than returned by
+      the API. `approved` then reflects the client's `fail_open` setting
+      (default `False` -> `approved=False`, i.e. fall through to your LLM).
     """
 
     approved: bool
@@ -51,6 +79,7 @@ class VerifyResult:
     threshold: float
     model_version: str
     latency_ms: float
+    degraded: bool = False
 
     @classmethod
     def _from_json(cls, d: dict[str, Any]) -> VerifyResult:
@@ -77,6 +106,18 @@ class CacheVerifier:
 
     Usable as a context manager (`with CacheVerifier(...) as cv:`) to close
     the underlying HTTP connection pool deterministically.
+
+    Because `verify()` sits on your request path, it is treated differently
+    from every other call:
+
+    - `verify_timeout` (default 1s, vs 10s for everything else) bounds how long
+      a slow or overloaded verifier can stall your request.
+    - On a timeout, connection error, or 5xx, `verify()` does not raise -- it
+      logs a warning and returns a synthetic `VerifyResult` with
+      `degraded=True`. `fail_open=False` (the default) makes that result
+      `approved=False` so you fall through to your LLM; `fail_open=True` makes
+      it `approved=True` so you serve the cached answer anyway. 4xx responses
+      (bad key, bad request, rate limit) still raise `CacheVerifierError`.
     """
 
     def __init__(
@@ -85,10 +126,14 @@ class CacheVerifier:
         *,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+        fail_open: bool = False,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("api_key is required -- get one at https://www.cacheverifier.com")
+        self._verify_timeout = verify_timeout
+        self._fail_open = fail_open
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"X-API-Key": api_key, "User-Agent": _user_agent()},
@@ -110,8 +155,16 @@ class CacheVerifier:
     # -- core: verify ----------------------------------------------------
 
     def verify(self, query: str, candidate_answer: str) -> VerifyResult:
-        """Approve or reject one gray-zone cache hit. `POST /v1/verify`."""
-        data = self._post("/v1/verify", json={"query": query, "candidate_answer": candidate_answer})
+        """Approve or reject one gray-zone cache hit. `POST /v1/verify`.
+
+        On a timeout / connection error / 5xx this returns a synthetic
+        `VerifyResult` (`degraded=True`, `approved` per `fail_open`) instead of
+        raising -- the verifier being unreachable should degrade to a normal
+        cache miss, not an exception on your request path.
+        """
+        data = self._verify_call("/v1/verify", {"query": query, "candidate_answer": candidate_answer})
+        if data is None:
+            return self._degraded_result()
         return VerifyResult._from_json(data)
 
     def verify_batch(self, pairs: Sequence[tuple[str, str]]) -> list[VerifyResult]:
@@ -120,10 +173,51 @@ class CacheVerifier:
 
         Useful when your own retrieval returns several close candidates:
         send them in rank order and take the first `approved` one.
+
+        Degrades the same way as `verify()`: on failure every pair comes back
+        as a `degraded` result rather than the call raising. A large batch may
+        need `verify_timeout` raised above the 1s default.
         """
         items = [{"query": q, "candidate_answer": a} for q, a in pairs]
-        data = self._post("/v1/verify/batch", json={"items": items})
+        data = self._verify_call("/v1/verify/batch", {"items": items})
+        if data is None:
+            return [self._degraded_result() for _ in items]
         return [VerifyResult._from_json(r) for r in data["results"]]
+
+    # -- verify plumbing: tight timeout + fail-open/closed fallback --------
+
+    def _verify_call(self, path: str, payload: dict[str, Any]) -> Any | None:
+        """POST a verify request with the request-path timeout. Returns the
+        parsed body, or None to signal "unavailable, fall back" on a
+        timeout / connection error / 5xx. 4xx still raises.
+        """
+        try:
+            return self._post(path, json=payload, timeout=self._verify_timeout)
+        except httpx.TransportError as exc:
+            self._warn_degraded(path, exc)
+        except CacheVerifierError as exc:
+            if exc.status_code < 500:
+                raise
+            self._warn_degraded(path, exc)
+        return None
+
+    def _warn_degraded(self, path: str, exc: Exception) -> None:
+        _log.warning(
+            "cacheverifier: %s unavailable (%s) -- failing %s",
+            path,
+            exc,
+            "open" if self._fail_open else "closed",
+        )
+
+    def _degraded_result(self) -> VerifyResult:
+        return VerifyResult(
+            approved=self._fail_open,
+            score=0.0,
+            threshold=0.0,
+            model_version=VERIFY_UNAVAILABLE,
+            latency_ms=0.0,
+            degraded=True,
+        )
 
     # -- feedback ------------------------------------------------------
 
@@ -252,8 +346,14 @@ class CacheVerifier:
         json: Any | None = None,
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        return self._unwrap(self._client.post(path, json=json, params=params or None, headers=headers))
+        # httpx treats timeout=None as "no timeout" -- only pass it through
+        # when a caller (verify) explicitly asked for a per-request value.
+        extra: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
+        return self._unwrap(
+            self._client.post(path, json=json, params=params or None, headers=headers, **extra)
+        )
 
     @staticmethod
     def _unwrap(resp: httpx.Response) -> Any:

@@ -32,7 +32,9 @@ class TestDispatch:
         with pytest.raises(SystemExit) as e:
             main(["--version"])
         assert e.value.code == 0
-        assert "cacheverifier 0.2.0" in capsys.readouterr().out
+        from cacheverifier import __version__
+
+        assert f"cacheverifier {__version__}" in capsys.readouterr().out
 
     def test_no_command_prints_help_and_returns_1(self, capsys):
         assert main([]) == 1

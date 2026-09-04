@@ -9,8 +9,17 @@ import pytest
 from cacheverifier import CacheVerifier, CacheVerifierError, VerifyResult
 
 
-def make_client(handler):
-    return CacheVerifier(api_key="cv_test", transport=httpx.MockTransport(handler))
+def make_client(handler, **kwargs):
+    return CacheVerifier(api_key="cv_test", transport=httpx.MockTransport(handler), **kwargs)
+
+
+_OK_VERIFY = {
+    "approved": True,
+    "score": 3.5,
+    "latency_ms": 24.1,
+    "model_version": "stock",
+    "threshold": 0.0,
+}
 
 
 def test_verify_parses_result_and_sends_api_key():
@@ -142,3 +151,88 @@ def test_error_response_without_json_body_falls_back_to_text():
 def test_empty_api_key_rejected():
     with pytest.raises(ValueError):
         CacheVerifier(api_key="")
+
+
+# -- request-path timeout + fail-open/closed --------------------------------
+
+
+def test_verify_uses_the_tight_verify_timeout_not_the_control_plane_one():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json=_OK_VERIFY)
+
+    with make_client(handler, timeout=10.0, verify_timeout=1.0) as cv:
+        cv.verify("q", "a")
+
+    # httpx expands a scalar timeout into per-operation values
+    assert set(seen["timeout"].values()) == {1.0}
+
+
+def test_verify_fails_closed_on_timeout():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("read timed out", request=request)
+
+    with make_client(handler) as cv:
+        result = cv.verify("q", "a")
+
+    assert result.degraded is True
+    assert result.approved is False
+    assert result.model_version == "verify_unavailable"
+
+
+def test_verify_fails_open_when_configured():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with make_client(handler, fail_open=True) as cv:
+        result = cv.verify("q", "a")
+
+    assert result.degraded is True
+    assert result.approved is True
+
+
+def test_verify_fails_closed_on_5xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="upstream overloaded")
+
+    with make_client(handler) as cv:
+        result = cv.verify("q", "a")
+
+    assert result.degraded is True
+    assert result.approved is False
+
+
+def test_verify_still_raises_on_4xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"detail": "rate limited"})
+
+    with make_client(handler) as cv, pytest.raises(CacheVerifierError) as excinfo:
+        cv.verify("q", "a")
+
+    assert excinfo.value.status_code == 429
+
+
+def test_verify_batch_degrades_every_pair_on_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    with make_client(handler) as cv:
+        results = cv.verify_batch([("q1", "a1"), ("q2", "a2"), ("q3", "a3")])
+
+    assert len(results) == 3
+    assert all(r.degraded and not r.approved for r in results)
+
+
+def test_control_plane_call_still_uses_the_10s_default_and_raises():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"status": "ok"})
+
+    with make_client(handler, timeout=10.0, verify_timeout=1.0) as cv:
+        cv.usage()
+
+    assert set(seen["timeout"].values()) == {10.0}

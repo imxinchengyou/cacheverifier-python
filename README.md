@@ -59,8 +59,34 @@ cv.feedback(query, answer, was_correct=True, similarity_score=0.86)
 |---|---|
 | `approved` | serve the cached answer (`True`) or fall through (`False`) |
 | `score` / `threshold` | `approved` is `score >= threshold` |
-| `model_version` | `"stock"`, `"v<id>"` (fine-tuned), or `"cold_start_fail_closed"` |
+| `model_version` | `"stock"`, `"v<id>"` (fine-tuned), `"cold_start_fail_closed"` / `"cold_start_auto_pending"`, or `"verify_unavailable"` |
 | `latency_ms` | server-side inference time |
+| `degraded` | `True` when the call failed and this result was synthesized client-side |
+
+## On your request path
+
+`verify()` runs inline with your traffic, so its defaults are conservative:
+
+- **1s timeout** (`verify_timeout=`), separate from the 10s `timeout=` used for
+  fine-tuning / feedback / monitoring calls. Warm verification is tens of
+  milliseconds server-side; 1s covers the network round trip and a cold model
+  load after a deploy without letting a stuck verifier stall your request.
+- **Fails closed.** On a timeout, connection error, or 5xx, `verify()` does not
+  raise — it logs a warning on the `cacheverifier` logger and returns a
+  `VerifyResult` with `degraded=True` and `approved=False`, so you fall through
+  to your LLM exactly as you would on a cache miss. A `4xx` (bad key, bad
+  request, rate limit) still raises `CacheVerifierError`.
+
+```python
+cv = CacheVerifier(api_key="cv_...", verify_timeout=1.0, fail_open=False)  # the defaults
+
+# fail_open=True instead returns approved=True on an outage — only if a
+# stale-or-near-miss answer is acceptable for that traffic:
+cv = CacheVerifier(api_key="cv_...", fail_open=True)
+```
+
+There is no formal uptime SLA yet, which is the other reason the fallback path
+is a built-in default rather than left to you.
 
 ## GPTCache
 

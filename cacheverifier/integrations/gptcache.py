@@ -22,7 +22,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from cacheverifier.client import DEFAULT_BASE_URL, DEFAULT_TIMEOUT, CacheVerifier
+from cacheverifier.client import (
+    DEFAULT_BASE_URL,
+    DEFAULT_TIMEOUT,
+    DEFAULT_VERIFY_TIMEOUT,
+    CacheVerifier,
+)
 
 try:
     from gptcache.similarity_evaluation import SimilarityEvaluation as _GPTCacheBase
@@ -37,6 +42,11 @@ class CacheVerifierEvaluation(_GPTCacheBase):
     hosted verifier already makes a binary approve/reject call per gray-zone
     hit rather than a softened similarity score. Callers who want GPTCache's
     own threshold logic on top can wrap this rather than replace it.
+
+    If the verify call times out or the service is unreachable, `evaluation()`
+    returns 0.0 (don't reuse) by default -- a verifier outage falls through to
+    a normal GPTCache miss. Pass `fail_open=True` to reuse the cached answer
+    instead in that case.
     """
 
     def __init__(
@@ -45,8 +55,16 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         *,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+        fail_open: bool = False,
     ) -> None:
-        self._cv = CacheVerifier(api_key=api_key, base_url=base_url, timeout=timeout)
+        self._cv = CacheVerifier(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            verify_timeout=verify_timeout,
+            fail_open=fail_open,
+        )
 
     def evaluation(self, src_dict: dict[str, Any], cache_dict: dict[str, Any], **_kwargs: Any) -> float:
         query = src_dict.get("question") or src_dict.get("query", "")
