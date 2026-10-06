@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1
+
+`cacheverifier healthcheck` now actually fine-tunes. It passed no
+`warmup_steps` to `CrossEncoder.fit`, whose default of 10000 kept a typical
+run below a few percent of its learning rate, so `auc_tuned` came back equal
+(or nearly equal) to `auc_baseline`. Warmup is now 10% of total steps and the
+default is 3 epochs (`--epochs`), the same as the hosted service since
+verifier-core 0.2.0. On a 500-row later holdout this took LmArena AUC from
+0.903 to 0.932 and AmazonHelp from 0.551 to 0.700. Runs take about 3x as long.
+
 ## 0.3.0
 
 Make the request-path defaults safe. `verify()` and `verify_batch()` now use a

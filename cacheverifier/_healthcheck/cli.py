@@ -48,8 +48,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--epochs",
         type=int,
-        default=1,
-        help="fine-tuning epochs (default: 1, matching the hosted service)",
+        default=3,
+        help="fine-tuning epochs (default: 3, matching the hosted service)",
     )
     p.add_argument(
         "--keep-model",
