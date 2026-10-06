@@ -13,6 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from cacheverifier._healthcheck._base_models import (
+    BASE_MODEL_CHOICES,
+    CJK_WARNING_RATIO,
+    ENGLISH_ONLY_BASE_MODELS,
+    cjk_ratio,
+    resolve_base_model,
+)
+
 _MISSING_EXTRA_HINT = (
     "the healthcheck extra is not installed -- run:\n"
     '    pip install "cacheverifier[healthcheck]"\n'
@@ -50,6 +58,17 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         default=3,
         help="fine-tuning epochs (default: 3, matching the hosted service)",
+    )
+    p.add_argument(
+        "--base-model",
+        default="ms_marco",
+        metavar="MODEL",
+        help=(
+            f"model to start from: {', '.join(BASE_MODEL_CHOICES)} (same choices as the hosted "
+            "service's base_model), a Hugging Face model id, or a local model directory. "
+            "Default ms_marco is English-only -- use multilingual or multilingual_small for "
+            "Chinese or other non-English traffic (they need several GB of RAM to fine-tune)"
+        ),
     )
     p.add_argument(
         "--keep-model",
@@ -125,6 +144,12 @@ def run(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    try:
+        base_model = resolve_base_model(args.base_model)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
     n = len(examples)
     print(f"\nCacheVerifier local Health Check  --  {input_path}")
     print("=" * 66)
@@ -132,6 +157,17 @@ def run(args: argparse.Namespace) -> int:
     print(f"usable (non-stale):   {n}")
     if n_stale:
         print(f"stale, excluded:      {n_stale}")
+
+    print(f"base model:           {base_model}")
+    if base_model in ENGLISH_ONLY_BASE_MODELS:
+        ratio = cjk_ratio([t for e in examples for t in (e.query, e.candidate_answer)])
+        if ratio > CJK_WARNING_RATIO:
+            print(
+                f"\nWarning: {ratio:.0%} of your text is Chinese/Japanese/Korean, but {base_model} is an "
+                "English-only model\n         (it reads most CJK characters as unknown tokens), so this "
+                "result won't reflect your\n         traffic. Re-run with --base-model multilingual "
+                "(or multilingual_small)."
+            )
 
     if n < _finetune.MIN_TRAIN_EXAMPLES:
         print(f"\nNeed at least {_finetune.MIN_TRAIN_EXAMPLES} non-stale rows to run; have {n}.", file=sys.stderr)
@@ -149,7 +185,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"\nfine-tuning locally (nothing sent) -> {out_dir}")
     print("this takes a few minutes on CPU; the base model downloads once on first run...\n")
 
-    result = _finetune.run_healthcheck(examples, out_dir, base_model=_finetune.DEFAULT_BASE_MODEL, epochs=args.epochs)
+    result = _finetune.run_healthcheck(examples, out_dir, base_model=base_model, epochs=args.epochs)
 
     print("results")
     print("-" * 66)
@@ -175,6 +211,9 @@ def run(args: argparse.Namespace) -> int:
 
     if args.emit_summary is not None:
         summary = {
+            # A local directory's path can carry a username -- this file is
+            # meant to be shareable, so record only that it was local.
+            "base_model": "local directory" if Path(base_model).is_dir() else base_model,
             "n_rows_read": len(rows),
             "n_usable": n,
             "n_stale_excluded": n_stale,

@@ -24,15 +24,17 @@ import torch
 from sentence_transformers import CrossEncoder, InputExample
 from torch.utils.data import DataLoader
 
-# All four imports above are from the `healthcheck` extra. This module is
+from cacheverifier._healthcheck._base_models import DEFAULT_BASE_MODEL
+
+# The four third-party imports above are from the `healthcheck` extra. This module is
 # only ever imported from inside `cacheverifier._healthcheck.cli.run()`,
 # which catches the ImportError and points the user at
 # `pip install "cacheverifier[healthcheck]"` -- so a plain
 # `import cacheverifier` / `cacheverifier --help` never pays this cost.
 
-DEFAULT_BASE_MODEL = "cross-encoder/ms-marco-MiniLM-L6-v2"
-"""The stock off-the-shelf verifier every tenant starts on -- the same base
-model the hosted service fine-tunes from."""
+NLI_LABEL_ORDER = ("contradiction", "entailment", "neutral")
+"""`cross-encoder/nli-*` models' class order, used when the loaded model
+doesn't expose an `id2label` naming them."""
 
 MAX_SEQUENCE_LENGTH = 128
 """Token cap applied identically at train and score time. Matches the
@@ -185,6 +187,28 @@ def _diagnose_ceiling(scores: np.ndarray, labels: np.ndarray) -> str | None:
     return "still_improvable"
 
 
+def _nli_column_indices(model: Any) -> tuple[int, int]:
+    """(entailment_idx, contradiction_idx) for a 3-class NLI cross-encoder."""
+    id2label = getattr(getattr(model, "config", None), "id2label", None)
+    if isinstance(id2label, dict) and len(id2label) == 3:
+        lut = {str(v).lower(): int(k) for k, v in id2label.items()}
+        if "entailment" in lut and "contradiction" in lut:
+            return lut["entailment"], lut["contradiction"]
+    return NLI_LABEL_ORDER.index("entailment"), NLI_LABEL_ORDER.index("contradiction")
+
+
+def score_pairs(model: Any, pairs: list[tuple[str, str]], batch_size: int = 32) -> np.ndarray:
+    """Higher means "more likely an acceptable answer". A 1-logit model
+    (ms-marco, the multilingual rerankers, anything fine-tuned here) returns
+    its raw logit; a 3-class NLI model returns P(entailment) - P(contradiction)
+    -- the same scoring the hosted service uses for the stock NLI baseline."""
+    if int(model.config.num_labels) == 3:
+        ent, contra = _nli_column_indices(model)
+        probs = np.asarray(model.predict(pairs, batch_size=batch_size, show_progress_bar=False, apply_softmax=True))
+        return probs[:, ent] - probs[:, contra]
+    return np.asarray(model.predict(pairs, batch_size=batch_size, show_progress_bar=False))
+
+
 def run_healthcheck(
     examples: list[GrayZoneExample],
     output_dir: str,
@@ -221,11 +245,21 @@ def run_healthcheck(
 
     baseline = CrossEncoder(base_model, device=device, max_length=MAX_SEQUENCE_LENGTH)
     test_pairs_scored = [smart_truncate_pair(q, a, baseline.tokenizer) for q, a in test_pairs]
-    baseline_scores = np.array(baseline.predict(test_pairs_scored, batch_size=32, show_progress_bar=False))
+    baseline_scores = score_pairs(baseline, test_pairs_scored)
     auc_baseline = roc_auc(baseline_scores, test_labels)
     del baseline
 
-    tuned = CrossEncoder(base_model, device=device, max_length=MAX_SEQUENCE_LENGTH)
+    # num_labels=1 forces a single-logit head, matching the hosted service: a
+    # no-op for 1-logit bases, a deliberate head reinitialization (encoder
+    # body kept) for the 3-class NLI base. ignore_mismatched_sizes lets that
+    # 3->1 reinit happen instead of raising.
+    tuned = CrossEncoder(
+        base_model,
+        num_labels=1,
+        device=device,
+        max_length=MAX_SEQUENCE_LENGTH,
+        automodel_args={"ignore_mismatched_sizes": True},
+    )
     train_examples = [
         InputExample(
             texts=list(smart_truncate_pair(e.query, e.candidate_answer, tuned.tokenizer)),
@@ -246,10 +280,10 @@ def run_healthcheck(
     tuned.save(output_dir)
 
     calib_scored = [smart_truncate_pair(q, a, tuned.tokenizer) for q, a in calib_pairs]
-    calib_scores = np.array(tuned.predict(calib_scored, batch_size=32, show_progress_bar=False))
+    calib_scores = score_pairs(tuned, calib_scored)
     threshold = select_threshold(calib_scores, calib_labels)
 
-    tuned_scores = np.array(tuned.predict(test_pairs_scored, batch_size=32, show_progress_bar=False))
+    tuned_scores = score_pairs(tuned, test_pairs_scored)
     auc_tuned = roc_auc(tuned_scores, test_labels)
     ceiling_status = _diagnose_ceiling(tuned_scores, test_labels)
 
@@ -259,7 +293,7 @@ def run_healthcheck(
     if threshold is not None:
         threshold_hit_rate, threshold_error_rate = _hit_and_error_rate(tuned_scores, test_labels, threshold)
         train_pairs_scored = [smart_truncate_pair(e.query, e.candidate_answer, tuned.tokenizer) for e in train_rows]
-        train_scores = np.array(tuned.predict(train_pairs_scored, batch_size=32, show_progress_bar=False))
+        train_scores = score_pairs(tuned, train_pairs_scored)
         train_labels = np.array([1 if e.was_correct else 0 for e in train_rows])
         train_pred = (train_scores >= threshold).astype(int)
         train_label_disagreement_rate = float(np.mean(train_pred != train_labels))

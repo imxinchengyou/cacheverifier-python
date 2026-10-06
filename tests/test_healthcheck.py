@@ -123,3 +123,83 @@ def test_run_healthcheck_warms_up_over_a_tenth_of_its_steps(tmp_path, monkeypatc
     assert seen["epochs"] == _finetune.TRAIN_EPOCHS == 3
     expected = max(1, int(_finetune.TRAIN_WARMUP_FRACTION * seen["steps_per_epoch"] * seen["epochs"]))
     assert seen["warmup_steps"] == expected
+
+
+class TestBaseModel:
+    def test_aliases_match_the_hosted_service(self):
+        from cacheverifier._healthcheck._base_models import BASE_MODEL_CHOICES, resolve_base_model
+
+        assert set(BASE_MODEL_CHOICES) == {"ms_marco", "nli", "multilingual", "multilingual_small"}
+        assert resolve_base_model("ms_marco") == "cross-encoder/ms-marco-MiniLM-L6-v2"
+        assert resolve_base_model("multilingual") == "BAAI/bge-reranker-base"
+
+    def test_hf_id_and_local_dir_pass_through(self, tmp_path):
+        from cacheverifier._healthcheck._base_models import resolve_base_model
+
+        assert resolve_base_model("someorg/some-reranker") == "someorg/some-reranker"
+        assert resolve_base_model(str(tmp_path)) == str(tmp_path)
+
+    @pytest.mark.parametrize("bad", ["multilingal", "/no/such/model/dir", ""])
+    def test_typos_and_missing_paths_are_rejected(self, bad):
+        from cacheverifier._healthcheck._base_models import resolve_base_model
+
+        with pytest.raises(ValueError, match="unknown base model"):
+            resolve_base_model(bad)
+
+    def test_cjk_ratio(self):
+        from cacheverifier._healthcheck._base_models import cjk_ratio
+
+        assert cjk_ratio(["how do I cancel"]) == 0.0
+        assert cjk_ratio(["怎么取消订阅"]) == 1.0
+        assert cjk_ratio(["怎么取消 subscription"]) == 4 / 16
+        assert cjk_ratio([]) == 0.0
+
+    def test_help_lists_base_model_choices(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["healthcheck", "--help"])
+        out = capsys.readouterr().out
+        assert "--base-model" in out and "multilingual_small" in out
+
+    @pytest.mark.skipif(not HAS_TORCH, reason="run() imports the healthcheck extra first")
+    def test_unknown_base_model_is_an_input_error(self, capsys, tmp_path):
+        f = tmp_path / "t.jsonl"
+        f.write_text(json.dumps({"query": "q", "candidate_answer": "a", "was_correct": True}) + "\n")
+        assert main(["healthcheck", str(f), "--base-model", "multilingal"]) == 2
+        assert "unknown base model" in capsys.readouterr().err
+
+    @pytest.mark.skipif(not HAS_TORCH, reason="run() imports the healthcheck extra first")
+    def test_chinese_data_on_english_model_warns(self, capsys, tmp_path):
+        # Below MIN_TRAIN_EXAMPLES, so run() stops before any download/training.
+        f = tmp_path / "t.jsonl"
+        f.write_text(
+            "\n".join(
+                json.dumps({"query": "怎么取消自动续费", "candidate_answer": "进入设置取消", "was_correct": True}, ensure_ascii=False)
+                for _ in range(3)
+            )
+        )
+        assert main(["healthcheck", str(f)]) == 2
+        out = capsys.readouterr().out
+        assert "English-only" in out and "--base-model multilingual" in out
+
+        assert main(["healthcheck", str(f), "--base-model", "multilingual_small"]) == 2
+        assert "English-only" not in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not HAS_TORCH, reason="needs the healthcheck extra (torch, sentence-transformers)")
+def test_run_healthcheck_nli_base_reinitializes_to_single_logit(tmp_path):
+    """The NLI base ships a 3-class head: the stock baseline is scored
+    P(entailment) - P(contradiction), and fine-tuning reinitializes it to the
+    same 1-logit head as every other base (matching the hosted service)."""
+    from sentence_transformers import CrossEncoder
+
+    from cacheverifier._healthcheck._base_models import BASE_MODEL_CHOICES
+    from cacheverifier._healthcheck._finetune import GrayZoneExample, run_healthcheck
+
+    examples = [
+        GrayZoneExample("how do I cancel my plan", "Settings > Billing > Cancel." if i % 2 == 0 else "Settings > Pause.", i % 2 == 0)
+        for i in range(24)
+    ]
+    result = run_healthcheck(examples, str(tmp_path / "model"), base_model=BASE_MODEL_CHOICES["nli"], epochs=1)
+    assert 0.0 <= result.auc_baseline <= 1.0
+    assert 0.0 <= result.auc_tuned <= 1.0
+    assert CrossEncoder(str(tmp_path / "model")).config.num_labels == 1
