@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+`cacheverifier healthcheck --base-model` picks the model the local Health
+Check starts from: `ms_marco` (default, unchanged), `nli`, `multilingual` or
+`multilingual_small` — the same choices as the hosted service's `base_model`
+— or any Hugging Face model id / local model directory. Chinese and other
+non-English traffic should use a multilingual base; the CLI now warns when
+most of the input is CJK text and the base is English-only. The NLI base's
+3-class head is scored `P(entailment) - P(contradiction)` for the stock
+baseline and re-initialized to a single logit for fine-tuning, matching the
+hosted service. `--emit-summary` records the base model (a local directory
+is recorded only as "local directory").
+
 ## 0.3.1
 
 `cacheverifier healthcheck` now actually fine-tunes. It passed no

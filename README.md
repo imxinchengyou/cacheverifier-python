@@ -145,6 +145,28 @@ Nothing is sent anywhere — the base model downloads once from Hugging Face, th
 fully offline. `--emit-summary` writes an aggregate-only JSON file (AUCs, counts, rates —
 no query or answer text) that's safe to share for a human read.
 
+**Choosing the base model.** `--base-model` takes the same values as the hosted
+service's `base_model` fine-tune parameter, so local and hosted numbers stay comparable:
+
+| `--base-model` | model | use for |
+|---|---|---|
+| `ms_marco` (default) | `cross-encoder/ms-marco-MiniLM-L6-v2` | English traffic |
+| `nli` | `cross-encoder/nli-MiniLM2-L6-H768` | English; entailment pretraining, stronger on negation / entity swaps |
+| `multilingual` | `BAAI/bge-reranker-base` | Chinese and other non-English traffic (~6 GB RAM to fine-tune) |
+| `multilingual_small` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | same, smaller (~3 GB RAM) |
+
+The English bases read most Chinese characters as unknown tokens, so on Chinese
+traffic their result doesn't mean anything — the CLI warns when it sees mostly CJK text
+on an English base. You can also pass any Hugging Face model id or a local model
+directory. If Hugging Face is unreachable from your network, set `HF_ENDPOINT` to a
+mirror, or download the model elsewhere and pass its directory:
+
+```bash
+cacheverifier healthcheck traffic.jsonl --base-model multilingual
+HF_ENDPOINT=https://hf-mirror.com cacheverifier healthcheck traffic.jsonl --base-model multilingual_small
+cacheverifier healthcheck traffic.jsonl --base-model ./models/bge-reranker-base
+```
+
 ```
 results
 ------------------------------------------------------------------
