@@ -43,6 +43,13 @@ _CONTENT_TOKEN_BUDGET = MAX_SEQUENCE_LENGTH - 3  # [CLS] + 2x [SEP]
 _MIN_QUERY_TOKENS = 32
 
 TRAIN_BATCH_SIZE = 4
+TRAIN_EPOCHS = 3
+TRAIN_WARMUP_FRACTION = 0.1
+"""Same as the hosted service (verifier-core 0.2.0). `CrossEncoder.fit`
+defaults to `warmup_steps=10000`; without an explicit value a typical run
+(a few hundred steps) never got past a few percent of its learning rate and
+the "fine-tuned" model was a near monotone shift of the base model, so
+`auc_tuned` came back equal to `auc_baseline`."""
 MIN_TRAIN_EXAMPLES = 20
 """Hard floor -- below this there aren't enough rows for one meaningful
 epoch plus a held-out split."""
@@ -183,7 +190,7 @@ def run_healthcheck(
     output_dir: str,
     *,
     base_model: str = DEFAULT_BASE_MODEL,
-    epochs: int = 1,
+    epochs: int = TRAIN_EPOCHS,
 ) -> HealthCheckResult:
     """Fine-tune `base_model` on a chronological prefix of `examples` and
     measure held-out AUC for the stock vs. fine-tuned model.
@@ -233,7 +240,8 @@ def run_healthcheck(
     # whether or not torch's stubs are installed (base CI has no torch).
     loader: DataLoader[Any] = DataLoader(cast(Any, train_examples), shuffle=True, batch_size=TRAIN_BATCH_SIZE)
     t0 = time.time()
-    tuned.fit(train_dataloader=loader, epochs=epochs, show_progress_bar=False)
+    warmup_steps = max(1, int(TRAIN_WARMUP_FRACTION * len(loader) * epochs))
+    tuned.fit(train_dataloader=loader, epochs=epochs, warmup_steps=warmup_steps, show_progress_bar=False)
     train_time_seconds = time.time() - t0
     tuned.save(output_dir)
 

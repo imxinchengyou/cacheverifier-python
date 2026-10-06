@@ -98,3 +98,28 @@ def test_run_healthcheck_end_to_end(tmp_path):
     assert result.n_train + result.n_calibrate + result.n_test == 36
     assert 0.0 <= result.auc_tuned <= 1.0
     assert (tmp_path / "model").is_dir()
+
+
+@pytest.mark.skipif(not HAS_TORCH, reason="needs the healthcheck extra (torch)")
+def test_run_healthcheck_warms_up_over_a_tenth_of_its_steps(tmp_path, monkeypatch):
+    # CrossEncoder.fit defaults to warmup_steps=10000, which kept a
+    # few-hundred-step run from ever reaching its learning rate.
+    from sentence_transformers import CrossEncoder
+
+    from cacheverifier._healthcheck import _finetune
+    from cacheverifier._healthcheck._finetune import GrayZoneExample, run_healthcheck
+
+    seen: dict = {}
+    real_fit = CrossEncoder.fit
+
+    def spy_fit(self, *args, **kwargs):
+        seen.update(kwargs, steps_per_epoch=len(kwargs["train_dataloader"]))
+        return real_fit(self, *args, **kwargs)
+
+    monkeypatch.setattr(CrossEncoder, "fit", spy_fit)
+    examples = [GrayZoneExample(f"question {i}", f"answer {i % 3}", i % 2 == 0) for i in range(40)]
+    run_healthcheck(examples, str(tmp_path / "model"))
+
+    assert seen["epochs"] == _finetune.TRAIN_EPOCHS == 3
+    expected = max(1, int(_finetune.TRAIN_WARMUP_FRACTION * seen["steps_per_epoch"] * seen["epochs"]))
+    assert seen["warmup_steps"] == expected
