@@ -135,6 +135,7 @@ def test_error_response_raises_with_detail():
 
     assert excinfo.value.status_code == 429
     assert excinfo.value.detail == "free tier limit reached"
+    assert excinfo.value.retry_after is None
 
 
 def test_error_response_without_json_body_falls_back_to_text():
@@ -204,14 +205,35 @@ def test_verify_fails_closed_on_5xx():
     assert result.approved is False
 
 
-def test_verify_still_raises_on_4xx():
+def test_verify_fails_closed_on_rate_limit_429():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, json={"detail": "rate limited"})
+        return httpx.Response(429, headers={"Retry-After": "1"}, json={"detail": "rate limited"})
+
+    with make_client(handler) as cv:
+        result = cv.verify("q", "a")
+
+    assert result.degraded is True
+    assert result.approved is False
+
+
+def test_verify_batch_degrades_on_rate_limit_429():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "1"}, json={"detail": "rate limited"})
+
+    with make_client(handler) as cv:
+        results = cv.verify_batch([("q1", "a1"), ("q2", "a2")])
+
+    assert all(r.degraded and not r.approved for r in results)
+
+
+def test_verify_still_raises_on_other_4xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "invalid API key"})
 
     with make_client(handler) as cv, pytest.raises(CacheVerifierError) as excinfo:
         cv.verify("q", "a")
 
-    assert excinfo.value.status_code == 429
+    assert excinfo.value.status_code == 401
 
 
 def test_verify_batch_degrades_every_pair_on_failure():

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1
+
+`verify()` and `verify_batch()` now treat a **rate-limited 429** (one with a
+`Retry-After` header) like a 5xx: they log a warning and return a `degraded`
+result (`approved=False` by default, per `fail_open`) instead of raising
+`CacheVerifierError`. A rate limit is transient load on your request path, so
+it should fall through to your LLM like an outage rather than throw. A 429
+*without* `Retry-After` means the monthly verify quota is used up and still
+raises, as do other 4xx responses (bad key, bad request).
+`CacheVerifierError` gains a `retry_after` attribute. Upgrade before the
+hosted service switches its rate-limit response from 503 to the documented
+429.
+
 ## 0.4.0
 
 `cacheverifier healthcheck --base-model` picks the model the local Health
