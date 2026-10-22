@@ -46,13 +46,15 @@ class CacheVerifierError(RuntimeError):
     """Raised for any non-2xx response from the API.
 
     `status_code` is the HTTP status; `detail` is the server's error message
-    (the JSON body's `detail` field when present, otherwise the raw text).
+    (the JSON body's `detail` field when present, otherwise the raw text);
+    `retry_after` is the response's `Retry-After` header, if it sent one.
     """
 
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(self, status_code: int, detail: str, retry_after: str | None = None) -> None:
         super().__init__(f"CacheVerifier API error {status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -69,8 +71,8 @@ class VerifyResult:
       fallback result (see `degraded`).
     - `latency_ms`: server-side model inference time, not round-trip time.
     - `degraded`: True when the verify call failed (timeout / connection error /
-      5xx) and this result was synthesized by the client rather than returned by
-      the API. `approved` then reflects the client's `fail_open` setting
+      5xx / rate-limited 429) and this result was synthesized by the client
+      rather than returned by the API. `approved` then reflects the client's `fail_open` setting
       (default `False` -> `approved=False`, i.e. fall through to your LLM).
     """
 
@@ -112,12 +114,14 @@ class CacheVerifier:
 
     - `verify_timeout` (default 1s, vs 10s for everything else) bounds how long
       a slow or overloaded verifier can stall your request.
-    - On a timeout, connection error, or 5xx, `verify()` does not raise -- it
-      logs a warning and returns a synthetic `VerifyResult` with
-      `degraded=True`. `fail_open=False` (the default) makes that result
-      `approved=False` so you fall through to your LLM; `fail_open=True` makes
-      it `approved=True` so you serve the cached answer anyway. 4xx responses
-      (bad key, bad request, rate limit) still raise `CacheVerifierError`.
+    - On a timeout, connection error, 5xx, or a rate-limited 429 (one with a
+      `Retry-After` header), `verify()` does not raise -- it logs a warning and
+      returns a synthetic `VerifyResult` with `degraded=True`.
+      `fail_open=False` (the default) makes that result `approved=False` so you
+      fall through to your LLM; `fail_open=True` makes it `approved=True` so
+      you serve the cached answer anyway. Other 4xx responses still raise
+      `CacheVerifierError`: a bad key, a bad request, or a 429 without
+      `Retry-After`, which means your monthly verify quota is used up.
     """
 
     def __init__(
@@ -157,7 +161,7 @@ class CacheVerifier:
     def verify(self, query: str, candidate_answer: str) -> VerifyResult:
         """Approve or reject one gray-zone cache hit. `POST /v1/verify`.
 
-        On a timeout / connection error / 5xx this returns a synthetic
+        On a timeout / connection error / 5xx / rate-limited 429 this returns a synthetic
         `VerifyResult` (`degraded=True`, `approved` per `fail_open`) instead of
         raising -- the verifier being unreachable should degrade to a normal
         cache miss, not an exception on your request path.
@@ -189,14 +193,19 @@ class CacheVerifier:
     def _verify_call(self, path: str, payload: dict[str, Any]) -> Any | None:
         """POST a verify request with the request-path timeout. Returns the
         parsed body, or None to signal "unavailable, fall back" on a
-        timeout / connection error / 5xx. 4xx still raises.
+        timeout / connection error / 5xx / 429 with `Retry-After`. Other 4xx
+        still raises: a bad key or request is a bug to fix, and a 429 without
+        `Retry-After` is the monthly quota running out, which needs a decision
+        (top up or subscribe), not a silent month of fallbacks. A rate limit is
+        transient load and should degrade like an outage instead.
         """
         try:
             return self._post(path, json=payload, timeout=self._verify_timeout)
         except httpx.TransportError as exc:
             self._warn_degraded(path, exc)
         except CacheVerifierError as exc:
-            if exc.status_code < 500:
+            rate_limited = exc.status_code == 429 and exc.retry_after is not None
+            if exc.status_code < 500 and not rate_limited:
                 raise
             self._warn_degraded(path, exc)
         return None
@@ -365,7 +374,7 @@ class CacheVerifier:
             detail = body["detail"] if isinstance(body, dict) and "detail" in body else resp.text
         except ValueError:
             detail = resp.text
-        raise CacheVerifierError(resp.status_code, str(detail))
+        raise CacheVerifierError(resp.status_code, str(detail), resp.headers.get("retry-after"))
 
 
 def _drop_none(**kwargs: Any) -> dict[str, Any]:

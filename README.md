@@ -71,11 +71,13 @@ cv.feedback(query, answer, was_correct=True, similarity_score=0.86)
   fine-tuning / feedback / monitoring calls. Warm verification is tens of
   milliseconds server-side; 1s covers the network round trip and a cold model
   load after a deploy without letting a stuck verifier stall your request.
-- **Fails closed.** On a timeout, connection error, or 5xx, `verify()` does not
-  raise — it logs a warning on the `cacheverifier` logger and returns a
-  `VerifyResult` with `degraded=True` and `approved=False`, so you fall through
-  to your LLM exactly as you would on a cache miss. A `4xx` (bad key, bad
-  request, rate limit) still raises `CacheVerifierError`.
+- **Fails closed.** On a timeout, connection error, 5xx, or a rate-limited 429
+  (one carrying `Retry-After`), `verify()` does not raise — it logs a warning on
+  the `cacheverifier` logger and returns a `VerifyResult` with `degraded=True`
+  and `approved=False`, so you fall through to your LLM exactly as you would on
+  a cache miss. Other `4xx` responses still raise `CacheVerifierError`: a bad
+  key, a bad request, or a 429 without `Retry-After`, which means your monthly
+  verify quota is used up.
 
 ```python
 cv = CacheVerifier(api_key="cv_...", verify_timeout=1.0, fail_open=False)  # the defaults
