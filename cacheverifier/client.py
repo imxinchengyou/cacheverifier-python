@@ -58,6 +58,32 @@ class CacheVerifierError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ShadowVerdict:
+    """What the shared stock model would have decided for a cold-start call.
+
+    Only a preview: during cold start the call itself is always rejected
+    (`VerifyResult.approved` is False). The stock model hasn't been checked
+    against your data, so run a Health Check before relying on it.
+    """
+
+    approved: bool
+    score: float
+    threshold: float
+    latency_ms: float
+    model_version: str = "stock"
+
+    @classmethod
+    def _from_json(cls, d: dict[str, Any]) -> ShadowVerdict:
+        return cls(
+            approved=bool(d["approved"]),
+            score=float(d["score"]),
+            threshold=float(d["threshold"]),
+            latency_ms=float(d["latency_ms"]),
+            model_version=str(d.get("model_version", "stock")),
+        )
+
+
+@dataclass(frozen=True)
 class VerifyResult:
     """One `/v1/verify` decision.
 
@@ -74,6 +100,11 @@ class VerifyResult:
       5xx / rate-limited 429) and this result was synthesized by the client
       rather than returned by the API. `approved` then reflects the client's `fail_open` setting
       (default `False` -> `approved=False`, i.e. fall through to your LLM).
+    - `notice`: a plain-language reason when no model decided the call (cold
+      start); None otherwise.
+    - `shadow`: on a cold-start call, what the shared stock model would have
+      decided (a `ShadowVerdict`); None otherwise, and on servers that don't
+      send it.
     """
 
     approved: bool
@@ -82,15 +113,20 @@ class VerifyResult:
     model_version: str
     latency_ms: float
     degraded: bool = False
+    notice: str | None = None
+    shadow: ShadowVerdict | None = None
 
     @classmethod
     def _from_json(cls, d: dict[str, Any]) -> VerifyResult:
+        shadow = d.get("shadow")
         return cls(
             approved=bool(d["approved"]),
             score=float(d["score"]),
             threshold=float(d["threshold"]),
             model_version=str(d["model_version"]),
             latency_ms=float(d["latency_ms"]),
+            notice=d.get("notice"),
+            shadow=ShadowVerdict._from_json(shadow) if shadow else None,
         )
 
 

@@ -16,7 +16,7 @@ Docs: https://www.cacheverifier.com/docs
 Research behind it: https://github.com/imxinchengyou/CacheVerifier
 """
 
-from cacheverifier.client import CacheVerifier, CacheVerifierError, VerifyResult
+from cacheverifier.client import CacheVerifier, CacheVerifierError, ShadowVerdict, VerifyResult
 
-__version__ = "0.4.1"
-__all__ = ["CacheVerifier", "CacheVerifierError", "VerifyResult", "__version__"]
+__version__ = "0.5.0"
+__all__ = ["CacheVerifier", "CacheVerifierError", "ShadowVerdict", "VerifyResult", "__version__"]

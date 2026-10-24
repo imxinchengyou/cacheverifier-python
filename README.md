@@ -62,6 +62,19 @@ cv.feedback(query, answer, was_correct=True, similarity_score=0.86)
 | `model_version` | `"stock"`, `"v<id>"` (fine-tuned), `"cold_start_fail_closed"` / `"cold_start_auto_pending"`, or `"verify_unavailable"` |
 | `latency_ms` | server-side inference time |
 | `degraded` | `True` when the call failed and this result was synthesized client-side |
+| `notice` | why no model decided the call (cold start); `None` otherwise |
+| `shadow` | cold start only: a `ShadowVerdict` with what the shared stock model would have decided. The call is still rejected, so treat it as a preview |
+
+A new account starts in cold start: every call returns `approved=False` until a
+Health Check shows the shared model is accurate enough on your data. Look at
+`result.shadow` to see what it would have decided in the meantime:
+
+```python
+result = cv.verify("when does my flight board", "Boarding starts 40 minutes before departure.")
+if result.shadow:
+    print(result.notice)
+    print("stock model would approve:", result.shadow.approved, result.shadow.score)
+```
 
 ## On your request path
 

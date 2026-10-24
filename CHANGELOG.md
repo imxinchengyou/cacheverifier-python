@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+`VerifyResult` gains two optional fields, both None unless the server sends
+them:
+
+- `notice`: the plain-language reason a call wasn't decided by a model (cold
+  start), which the API already returned but the client dropped.
+- `shadow`: on a cold-start call, a `ShadowVerdict` with what the shared stock
+  model would have decided (`approved`, `score`, `threshold`, `latency_ms`).
+  The call itself is still rejected, so this is a preview: your first calls
+  on a new account show what the model thinks before anything is served.
+
 ## 0.4.1
 
 `verify()` and `verify_batch()` now treat a **rate-limited 429** (one with a
