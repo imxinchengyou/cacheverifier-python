@@ -2,6 +2,11 @@
 
 ## 0.5.0
 
+New LangChain integration: `cacheverifier.integrations.langchain.VerifiedCache`
+wraps any LangChain cache (e.g. `RedisSemanticCache`) and verifies each hit
+before it is served; a rejected hit becomes a miss. Install with
+`pip install "cacheverifier[langchain]"`.
+
 `VerifyResult` gains two optional fields, both None unless the server sends
 them:
 
