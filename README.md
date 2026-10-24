@@ -62,6 +62,19 @@ cv.feedback(query, answer, was_correct=True, similarity_score=0.86)
 | `model_version` | `"stock"`, `"v<id>"` (fine-tuned), `"cold_start_fail_closed"` / `"cold_start_auto_pending"`, or `"verify_unavailable"` |
 | `latency_ms` | server-side inference time |
 | `degraded` | `True` when the call failed and this result was synthesized client-side |
+| `notice` | why no model decided the call (cold start); `None` otherwise |
+| `shadow` | cold start only: a `ShadowVerdict` with what the shared stock model would have decided. The call is still rejected, so treat it as a preview |
+
+A new account starts in cold start: every call returns `approved=False` until a
+Health Check shows the shared model is accurate enough on your data. Look at
+`result.shadow` to see what it would have decided in the meantime:
+
+```python
+result = cv.verify("when does my flight board", "Boarding starts 40 minutes before departure.")
+if result.shadow:
+    print(result.notice)
+    print("stock model would approve:", result.shadow.approved, result.shadow.score)
+```
 
 ## On your request path
 
@@ -106,6 +119,30 @@ evaluator.report_feedback(query, answer, was_correct=False, similarity_score=0.9
 ```
 
 See [`examples/gptcache_example.py`](examples/gptcache_example.py).
+
+## LangChain
+
+`VerifiedCache` wraps any LangChain cache, typically a semantic one, and only
+serves a hit after CacheVerifier approves it; a rejected hit is a miss, so
+your model is called as usual. For chat models it verifies against the last
+user message.
+
+```bash
+pip install "cacheverifier[langchain]"
+```
+
+```python
+from langchain_core.globals import set_llm_cache
+from langchain_redis import RedisSemanticCache
+from cacheverifier.integrations.langchain import VerifiedCache
+
+set_llm_cache(
+    VerifiedCache(
+        RedisSemanticCache(redis_url="redis://localhost:6379", embeddings=embeddings),
+        api_key="cv_...",
+    )
+)
+```
 
 ## Fine-tuning
 

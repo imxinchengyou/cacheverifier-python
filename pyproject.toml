@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cacheverifier"
-version = "0.4.1"
+version = "0.5.0"
 description = "Python client for the hosted CacheVerifier semantic-cache verification API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -40,6 +40,7 @@ Research = "https://github.com/imxinchengyou/CacheVerifier"
 
 [project.optional-dependencies]
 gptcache = ["gptcache>=0.1.30"]
+langchain = ["langchain-core>=0.3"]
 # `cacheverifier healthcheck` -- runs the hosted Health Check Report's
 # stock-vs-fine-tuned evaluation locally. Deliberately NOT a base
 # dependency: torch + sentence-transformers dwarf the httpx-only client.
@@ -54,7 +55,7 @@ healthcheck = [
     "torch>=2.2",
     "sentence-transformers>=3.0,<4",
 ]
-dev = ["pytest>=7", "mypy>=1.5", "ruff>=0.4"]
+dev = ["pytest>=7", "mypy>=1.5", "ruff>=0.4", "langchain-core>=0.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["cacheverifier"]

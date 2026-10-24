@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from cacheverifier import CacheVerifier, CacheVerifierError, VerifyResult
+from cacheverifier import CacheVerifier, CacheVerifierError, ShadowVerdict, VerifyResult
 
 
 def make_client(handler, **kwargs):
@@ -51,6 +51,32 @@ def test_verify_parses_result_and_sends_api_key():
     assert seen["path"] == "/v1/verify"
     assert seen["api_key"] == "cv_test"
     assert seen["body"] == {"query": "how do I cancel", "candidate_answer": "Go to Settings > Billing."}
+    assert result.notice is None
+    assert result.shadow is None
+
+
+def test_verify_parses_cold_start_notice_and_shadow_verdict():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "approved": False,
+                "score": 0.0,
+                "latency_ms": 0.0,
+                "model_version": "cold_start_auto_pending",
+                "threshold": 0.0,
+                "decision_rule": "cold_start",
+                "notice": "No verifier has been checked against your data yet.",
+                "shadow": {"approved": True, "score": 2.1, "threshold": 0.0, "latency_ms": 18.0, "model_version": "stock"},
+            },
+        )
+
+    with make_client(handler) as cv:
+        result = cv.verify("when does my flight board", "Boarding starts 40 minutes before departure.")
+
+    assert result.approved is False
+    assert result.notice.startswith("No verifier")
+    assert result.shadow == ShadowVerdict(approved=True, score=2.1, threshold=0.0, latency_ms=18.0)
 
 
 def test_verify_batch_returns_ordered_results():
