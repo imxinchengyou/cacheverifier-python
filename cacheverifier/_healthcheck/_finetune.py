@@ -25,6 +25,7 @@ from sentence_transformers import CrossEncoder, InputExample
 from torch.utils.data import DataLoader
 
 from cacheverifier._healthcheck._base_models import DEFAULT_BASE_MODEL
+from cacheverifier._inference import MAX_SEQUENCE_LENGTH, smart_truncate_pair
 
 # The four third-party imports above are from the `healthcheck` extra. This module is
 # only ever imported from inside `cacheverifier._healthcheck.cli.run()`,
@@ -36,13 +37,11 @@ NLI_LABEL_ORDER = ("contradiction", "entailment", "neutral")
 """`cross-encoder/nli-*` models' class order, used when the loaded model
 doesn't expose an `id2label` naming them."""
 
-MAX_SEQUENCE_LENGTH = 128
-"""Token cap applied identically at train and score time. Matches the
-hosted service; BERT-style attention memory is O(n^2) in sequence length,
-and this keeps a CPU run well-behaved."""
-
-_CONTENT_TOKEN_BUDGET = MAX_SEQUENCE_LENGTH - 3  # [CLS] + 2x [SEP]
-_MIN_QUERY_TOKENS = 32
+# Token cap and truncation shared with local scoring, so a Health Check
+# trains with exactly what the service and `LocalVerifier` score with. Before
+# 0.6.0 this module kept its own copy of the truncation, which had fallen
+# behind the service's 0.7.0 change (a long query next to a short answer
+# was cut to half the budget).
 
 TRAIN_BATCH_SIZE = 4
 TRAIN_EPOCHS = 3
@@ -100,34 +99,6 @@ class HealthCheckResult:
     @property
     def auc_delta(self) -> float:
         return self.auc_tuned - self.auc_baseline
-
-
-def _head_tail_truncate(ids: list[int], budget: int, head_ratio: float = 0.6) -> list[int]:
-    if len(ids) <= budget:
-        return ids
-    head_n = int(budget * head_ratio)
-    tail_n = budget - head_n
-    return ids[:head_n] + (ids[-tail_n:] if tail_n > 0 else [])
-
-
-def smart_truncate_pair(query: str, candidate_answer: str, tokenizer: Any) -> tuple[str, str]:
-    """Tokenizer-aware head+tail truncation, applied identically at train
-    and score time (a model trained on one truncation policy and scored
-    with another sees a different token window than it was optimized
-    against). A no-op whenever the pair already fits."""
-    query_ids = tokenizer.encode(query, add_special_tokens=False)
-    answer_ids = tokenizer.encode(candidate_answer, add_special_tokens=False)
-    if len(query_ids) + len(answer_ids) <= _CONTENT_TOKEN_BUDGET:
-        return query, candidate_answer
-
-    query_budget = min(len(query_ids), max(_MIN_QUERY_TOKENS, _CONTENT_TOKEN_BUDGET // 2))
-    answer_budget = _CONTENT_TOKEN_BUDGET - query_budget
-    query_ids = _head_tail_truncate(query_ids, query_budget)
-    answer_ids = _head_tail_truncate(answer_ids, answer_budget)
-    return (
-        tokenizer.decode(query_ids, skip_special_tokens=True),
-        tokenizer.decode(answer_ids, skip_special_tokens=True),
-    )
 
 
 def roc_auc(scores: np.ndarray, labels: np.ndarray) -> float:

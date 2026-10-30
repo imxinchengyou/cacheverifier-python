@@ -25,6 +25,8 @@ pip install cacheverifier
 pip install "cacheverifier[gptcache]"
 # with the offline Health Check (adds torch + sentence-transformers):
 pip install "cacheverifier[healthcheck]"
+# to score with your fine-tuned model on your own machines (same deps):
+pip install "cacheverifier[local]"
 ```
 
 Requires Python 3.9+. The only runtime dependency is `httpx` — the extras above
@@ -163,6 +165,40 @@ if job.get("result_model_version"):
 `cv.dry_run([...])` reports the same baseline-vs-tuned AUC on examples you pass directly,
 without writing anything or deploying a model.
 
+## Local scoring (Managed plans)
+
+`LocalVerifier` runs the model CacheVerifier fine-tuned for you on your own
+machines: no network round trip on your request path, and your query and
+answer texts stay with you. Fine-tuning, drift monitoring, audits and
+certification keep running on the service.
+
+```python
+from cacheverifier import LocalVerifier
+
+cv = LocalVerifier(api_key="cv_...")       # downloads your live model in the background
+r = cv.verify(query, cached_answer, similarity_score=0.87, cached_query=cached_question)
+if r.approved:
+    ...                                    # serve from cache
+else:
+    answer = call_llm(query)
+    if r.audit:                            # a randomized audit: report whether the cached answer was right
+        cv.feedback(query, cached_answer, was_correct=same_answer(answer, cached_answer), result=r)
+```
+
+- It decides exactly as the hosted `/v1/verify` would with that model: every download
+  carries reference verdicts from the service, and a model that doesn't reproduce them
+  locally is not used.
+- When a newer model goes live (after a fine-tune or a scheduled recalibration), it is
+  downloaded, checked, and switched to without a restart.
+- While auditing is on, each decision is uploaded as scores, verdicts and a keyed hash of
+  the pair, never the texts, so audits and `/v1/monitor/risk` work as with the hosted API.
+- Until a model is ready, calls go to the hosted API (`fallback="hosted"`, the default)
+  or are rejected (`fallback="reject"`). Pass `wait=True` to block until the first
+  download finishes (a model is ~330MB).
+- The audit draw happens in this client. The risk bound assumes it is independent of
+  whether the answer is right, which the client guarantees unless it is modified.
+- Not supported yet: the online ACI threshold (local scoring uses the model's fixed one).
+
 ## Local Health Check (offline)
 
 `cv.dry_run()` still uploads your examples to the API. If that's a blocker — a
@@ -224,7 +260,7 @@ verdict
 
 | method | endpoint |
 |---|---|
-| `verify(query, candidate_answer)` | `POST /v1/verify` |
+| `verify(query, candidate_answer, similarity_score=..., cached_query=...)` | `POST /v1/verify` |
 | `verify_batch(pairs)` | `POST /v1/verify/batch` |
 | `feedback(...)` / `feedback_batch(items)` | `POST /v1/feedback` / `/batch` |
 | `finetune(...)` / `dry_run(examples, ...)` | `POST /v1/finetune/jobs` / `/dry-run` |
@@ -233,6 +269,8 @@ verdict
 | `drift_status()` | `GET /v1/monitor/drift-status` |
 | `gray_zone_threshold()` | `GET /v1/monitor/gray-zone-threshold` |
 | `usage()` / `savings()` | `GET /v1/usage/status` / `/savings` |
+| `LocalVerifier.verify(...)` / `verify_batch(...)` | local; decisions to `POST /v1/verify/decisions` |
+| `LocalVerifier.refresh()` | `GET /v1/models/active` + `/v1/models/{id}/files/{name}` |
 
 Non-2xx responses raise `CacheVerifierError` (`.status_code`, `.detail`).
 

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cacheverifier"
-version = "0.5.0"
-description = "Python client for the hosted CacheVerifier semantic-cache verification API"
+version = "0.6.0"
+description = "Python client for the CacheVerifier semantic-cache verification API, hosted or scored locally"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -51,6 +51,12 @@ healthcheck = [
     # numpy <2: the torch builds these versions pull are compiled against
     # the numpy 1.x ABI ("Failed to initialize NumPy: _ARRAY_API not found"
     # on numpy 2). Same constraint the hosted service uses.
+    "numpy>=1.26,<2",
+    "torch>=2.2",
+    "sentence-transformers>=3.0,<4",
+]
+# `LocalVerifier`: the same scoring stack as the healthcheck extra.
+local = [
     "numpy>=1.26,<2",
     "torch>=2.2",
     "sentence-transformers>=3.0,<4",
