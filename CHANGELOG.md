@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0
+
+New `LocalVerifier` (`pip install "cacheverifier[local]"`, Managed plans):
+scores gray-zone hits on your own machines with the model CacheVerifier
+fine-tuned for you, deciding exactly as the hosted `/v1/verify` would. It
+downloads the live model, checks it against reference verdicts from the
+service before using it, switches to newer models as they go live, and, while
+auditing is on, uploads each decision without the texts so audits and risk
+monitoring keep working. Falls back to the hosted API until a model is ready.
+
+`CacheVerifier.verify()` takes `similarity_score`, `cached_query` and
+`runner_up_similarity_score` (all optional), which a fine-tuned model's joint
+rules use; before this the client couldn't send them. `feedback()` takes
+`cached_query` and `verification_id`. `VerifyResult` gains `decision_rule`,
+`audit` and `verification_id`, which the API already returned.
+
+The offline Health Check now truncates long inputs exactly as the service
+does since its verifier-core 0.7.0: a long query next to a short answer keeps
+the room the answer doesn't need, instead of being cut to half the budget.
+
 ## 0.5.0
 
 New LangChain integration: `cacheverifier.integrations.langchain.VerifiedCache`

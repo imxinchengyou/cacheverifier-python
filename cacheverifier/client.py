@@ -105,6 +105,14 @@ class VerifyResult:
     - `shadow`: on a cold-start call, what the shared stock model would have
       decided (a `ShadowVerdict`); None otherwise, and on servers that don't
       send it.
+    - `decision_rule`: `"threshold"`, `"joint"` / `"joint_gap"` (a fitted rule
+      that also used your similarity scores), `"aci"`, or `"cold_start"`.
+    - `audit`: this approval was drawn for a randomized audit, so `approved`
+      is False: call your LLM, serve its answer, and report whether the
+      cached answer matched with `feedback(..., verification_id=...)`.
+    - `verification_id`: set while auditing is on; pass it to `feedback()`.
+      From `LocalVerifier` it is None until the decision has been uploaded:
+      pass the result itself as `feedback(..., result=r)` instead.
     """
 
     approved: bool
@@ -115,6 +123,11 @@ class VerifyResult:
     degraded: bool = False
     notice: str | None = None
     shadow: ShadowVerdict | None = None
+    decision_rule: str | None = None
+    audit: bool = False
+    verification_id: int | None = None
+    local_decision: str | None = None
+    """`LocalVerifier` only: its handle for this decision until upload."""
 
     @classmethod
     def _from_json(cls, d: dict[str, Any]) -> VerifyResult:
@@ -127,6 +140,9 @@ class VerifyResult:
             latency_ms=float(d["latency_ms"]),
             notice=d.get("notice"),
             shadow=ShadowVerdict._from_json(shadow) if shadow else None,
+            decision_rule=d.get("decision_rule"),
+            audit=bool(d.get("audit", False)),
+            verification_id=d.get("verification_id"),
         )
 
 
@@ -194,15 +210,36 @@ class CacheVerifier:
 
     # -- core: verify ----------------------------------------------------
 
-    def verify(self, query: str, candidate_answer: str) -> VerifyResult:
+    def verify(
+        self,
+        query: str,
+        candidate_answer: str,
+        *,
+        similarity_score: float | None = None,
+        cached_query: str | None = None,
+        runner_up_similarity_score: float | None = None,
+    ) -> VerifyResult:
         """Approve or reject one gray-zone cache hit. `POST /v1/verify`.
+
+        The optional arguments are what your cache lookup already knows:
+        the hit's similarity score, the cached entry's own original query,
+        and the second-best match's similarity. A fine-tuned model uses them
+        when it learned a rule from them; they never hurt otherwise.
 
         On a timeout / connection error / 5xx / rate-limited 429 this returns a synthetic
         `VerifyResult` (`degraded=True`, `approved` per `fail_open`) instead of
         raising -- the verifier being unreachable should degrade to a normal
         cache miss, not an exception on your request path.
         """
-        data = self._verify_call("/v1/verify", {"query": query, "candidate_answer": candidate_answer})
+        payload = {"query": query, "candidate_answer": candidate_answer}
+        payload.update(
+            _drop_none(
+                similarity_score=similarity_score,
+                cached_query=cached_query,
+                runner_up_similarity_score=runner_up_similarity_score,
+            )
+        )
+        data = self._verify_call("/v1/verify", payload)
         if data is None:
             return self._degraded_result()
         return VerifyResult._from_json(data)
@@ -273,6 +310,8 @@ class CacheVerifier:
         was_correct: bool,
         *,
         similarity_score: float | None = None,
+        cached_query: str | None = None,
+        verification_id: int | None = None,
         stale: bool = False,
         idempotency_key: str | None = None,
     ) -> int:
@@ -286,6 +325,9 @@ class CacheVerifier:
         - `similarity_score`: your cache backend's own score for this
           candidate, if you still have it. Only used by
           `gray_zone_threshold()`; safe to omit.
+        - `cached_query`: the cached entry's own original query, if you have it.
+        - `verification_id`: from the `VerifyResult` this feedback is about
+          (always for an `audit` result) -- it ties the label to that verdict.
         - `stale`: set instead of a bare `was_correct=False` when the answer
           is wrong ONLY because a fact changed (price, date, ...), not a
           semantic mismatch. Stale rows are excluded from training and drift.
@@ -297,8 +339,9 @@ class CacheVerifier:
             "was_correct": was_correct,
             "stale": stale,
         }
-        if similarity_score is not None:
-            payload["similarity_score"] = similarity_score
+        payload.update(
+            _drop_none(similarity_score=similarity_score, cached_query=cached_query, verification_id=verification_id)
+        )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return int(self._post("/v1/feedback", json=payload, headers=headers)["id"])
 
