@@ -31,16 +31,16 @@ cache.init(
     similarity_evaluation=evaluator,
 )
 
-put("how do I cancel my subscription?", "Go to Settings > Billing > Cancel subscription.")
+put("how do I change my flight date?", "Open Manage booking, pick a new date, and pay any fare difference.")
 
 # Close-but-different intent. Cosine similarity would likely reuse the
 # cached answer; the verifier call decides whether that is actually safe.
-hit = get("how do I pause my subscription for a month?")
+hit = get("how do I change my seat on my flight?")
 print("cache returned:", hit)
 
 # When you later learn whether a served hit was right:
 evaluator.report_feedback(
-    "how do I pause my subscription for a month?",
+    "how do I change my seat on my flight?",
     hit or "",
     was_correct=False,
 )

@@ -4,14 +4,34 @@
 [![PyPI](https://img.shields.io/pypi/v/cacheverifier)](https://pypi.org/project/cacheverifier/)
 [![Python](https://img.shields.io/pypi/pyversions/cacheverifier)](https://pypi.org/project/cacheverifier/)
 
-Python client for **[CacheVerifier](https://www.cacheverifier.com)** — a hosted API that
-verifies semantic-cache hits. Given a query and a candidate cached answer, it approves or
-rejects serving that answer from cache, so a similarity match that is *close but wrong*
-doesn't become a silent error in your app.
+Python client for **[CacheVerifier](https://www.cacheverifier.com)**: verification and
+operations for semantic caches. It checks the cache hits a similarity threshold can't call,
+then keeps your cache right after launch.
+
+- **Verify the uncertain hits.** Given a query and a candidate cached answer, approve or
+  reject serving it in tens of milliseconds, so a match that is *close but wrong* doesn't
+  become a silent error. Fine-tuned on your own feedback.
+- **Know your real error rate.** Randomized audits of approved hits give an exact
+  (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your
+  traffic, not a benchmark.
+- **Certified thresholds.** Certify a threshold with Conformal Risk Control at fine-tune
+  time, and optionally let an online (ACI) threshold follow what the audits find.
+- **Catch drift and recalibrate.** When traffic moves away from what the verifier learned,
+  you're alerted, and on Managed plans it is retrained on your feedback automatically.
+- **Know which entries to fix.** `entries_to_refresh()` lists the cache entries your
+  feedback reported stale, or wrong more often than right, with your own cache keys.
+- **Run it in your stack.** On Managed plans, `LocalVerifier` scores with your fine-tuned
+  model locally: no network hop, your texts stay with you, nothing metered.
 
 CacheVerifier does **not** run your cache or do similarity search. Your cache backend does
 its own lookup first; you call `verify()` only on the candidates in the similarity "gray
 zone", where a plain threshold match might be wrong.
+
+| | answers | examples |
+|---|---|---|
+| Static-threshold caches | "how similar is it?" | GPTCache, LiteLLM, Portkey, Redis LangCache |
+| Adaptive-threshold caches | "how similar, with a learned per-entry cutoff?" (replaces your cache) | vCache |
+| **Verification layer** | "is this cached answer right for this question?" (sits on top of your cache) | **CacheVerifier** |
 
 - Docs / API reference: <https://www.cacheverifier.com/docs>
 - Why similarity ≠ correctness: <https://www.cacheverifier.com/why-similarity-fails>
@@ -34,16 +54,16 @@ are opt-in.
 
 ## Quickstart
 
-Get a free API key at <https://www.cacheverifier.com> (self-serve verify and fine-tuning
-are free forever, no card).
+Get a free API key at <https://www.cacheverifier.com> (verify, fine-tuning, audits and
+entries to refresh are free, no card).
 
 ```python
 from cacheverifier import CacheVerifier
 
 cv = CacheVerifier(api_key="cv_...")
 
-query = "how do I cancel my subscription"
-candidate = "Go to Settings > Billing > Pause subscription for a month."  # from your cache
+query = "can I change the delivery address after my parcel ships"
+candidate = "You can change the delivery address any time before the parcel ships."  # from your cache
 
 result = cv.verify(query, candidate)
 if result.approved:
@@ -105,23 +125,6 @@ cv = CacheVerifier(api_key="cv_...", fail_open=True)
 There is no formal uptime SLA yet, which is the other reason the fallback path
 is a built-in default rather than left to you.
 
-## GPTCache
-
-Drop the verifier into a GPTCache pipeline as its similarity evaluator — no fork required:
-
-```python
-from gptcache import cache
-from cacheverifier.integrations.gptcache import CacheVerifierEvaluation
-
-evaluator = CacheVerifierEvaluation(api_key="cv_...")
-cache.init(similarity_evaluation=evaluator, ...)
-
-# when you learn a served hit's real outcome:
-evaluator.report_feedback(query, answer, was_correct=False, similarity_score=0.9)
-```
-
-See [`examples/gptcache_example.py`](examples/gptcache_example.py).
-
 ## LangChain
 
 `VerifiedCache` wraps any LangChain cache, typically a semantic one, and only
@@ -145,6 +148,23 @@ set_llm_cache(
     )
 )
 ```
+
+## GPTCache
+
+Drop the verifier into a GPTCache pipeline as its similarity evaluator — no fork required:
+
+```python
+from gptcache import cache
+from cacheverifier.integrations.gptcache import CacheVerifierEvaluation
+
+evaluator = CacheVerifierEvaluation(api_key="cv_...")
+cache.init(similarity_evaluation=evaluator, ...)
+
+# when you learn a served hit's real outcome:
+evaluator.report_feedback(query, answer, was_correct=False, similarity_score=0.9)
+```
+
+See [`examples/gptcache_example.py`](examples/gptcache_example.py).
 
 ## Entries to refresh
 
@@ -268,6 +288,25 @@ verdict
 ------------------------------------------------------------------
   IMPROVED   -- fine-tuning on your own data helps this traffic
 ```
+
+## Recommended production setup
+
+- Keep randomized audits on (the default for new accounts) and report each audited call
+  with `feedback(..., verification_id=r.verification_id)`, or `result=r` on
+  `LocalVerifier`. That is what makes the measured error rate real.
+- Fine-tune with `cost_ratio=` (how many times worse a wrong reuse is than an extra LLM
+  call) instead of the default threshold, and turn on ACI once audits are flowing.
+- Send `cache_entry_id=` with feedback so `entries_to_refresh()` hands back your keys.
+- At volume, score locally with `LocalVerifier`.
+
+## Known limits
+
+- The hosted verifier is **English-only** today. Don't send Chinese or other non-English
+  traffic to it; multilingual base models are evaluated in the docs but not deployed.
+- Query + answer share a **128-token** input; longer pairs are truncated head and tail.
+- Verify endpoints allow about **20 requests/second per API key**. Use `verify_batch()` or
+  `LocalVerifier` beyond that.
+- No formal uptime SLA yet; `verify()` fails closed by default (see above).
 
 ## API surface
 

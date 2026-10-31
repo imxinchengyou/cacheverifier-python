@@ -152,7 +152,7 @@ class CacheVerifier:
         from cacheverifier import CacheVerifier
 
         cv = CacheVerifier(api_key="cv_...")
-        result = cv.verify("how do I cancel", "Go to Settings > Billing > Pause.")
+        result = cv.verify("can I change my flight date", "You can change your seat until check-in closes.")
         if result.approved:
             ...  # serve the cached answer
         else:

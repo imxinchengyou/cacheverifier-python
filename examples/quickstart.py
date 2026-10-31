@@ -16,17 +16,17 @@ from cacheverifier import CacheVerifier
 def call_your_llm(query: str) -> str:
     """Stand-in for your own LLM call. CacheVerifier doesn't do this part --
     your cache backend already has one."""
-    return "Go to Settings > Billing > Cancel subscription."
+    return "Once a parcel has shipped, contact the carrier to redirect it; the address can't be edited online."
 
 
 def main() -> None:
     api_key = os.environ["CACHEVERIFIER_API_KEY"]
 
     # A gray-zone example: your cache's similarity search found a candidate
-    # close enough to look like a match, but "cancel" vs "pause" is a real
-    # difference a plain similarity threshold can't tell apart.
-    query = "how do I cancel my subscription"
-    candidate = "Go to Settings > Billing > Pause subscription for a month."
+    # close enough to look like a match, but "after" vs "before" it ships is a
+    # real difference a plain similarity threshold can't tell apart.
+    query = "can I change the delivery address after my parcel ships"
+    candidate = "You can change the delivery address any time before the parcel ships."
 
     # verify() sits on your request path: it uses a 1s timeout and, if the
     # service is unreachable, returns a degraded result (approved=False here)
