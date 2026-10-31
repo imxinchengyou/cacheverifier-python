@@ -133,11 +133,35 @@ def test_feedback_returns_id_and_forwards_idempotency_key():
 def test_feedback_omits_optional_fields_when_unset():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "similarity_score" not in json.loads(request.content)
+        assert "cache_entry_id" not in json.loads(request.content)
         assert request.headers.get("Idempotency-Key") is None
         return httpx.Response(200, json={"id": 1})
 
     with make_client(handler) as cv:
         assert cv.feedback("q", "a", was_correct=True) == 1
+
+
+def test_entries_to_refresh_round_trip():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        if request.url.path == "/v1/feedback":
+            return httpx.Response(200, json={"id": 7})
+        if request.method == "GET":
+            return httpx.Response(200, json={"entries": [{"key": "k" * 32, "cache_entry_id": "faq:shipping", "reason": "stale"}]})
+        return httpx.Response(200, json={"key": "k" * 32, "resolved_at": "2026-10-31T00:00:00Z"})
+
+    with make_client(handler) as cv:
+        cv.feedback("q", "a", was_correct=False, stale=True, cache_entry_id="faq:shipping")
+        [entry] = cv.entries_to_refresh()
+        assert entry["cache_entry_id"] == "faq:shipping"
+        assert cv.resolve_entry(entry["key"])["key"] == entry["key"]
+    assert json.loads(seen[0][2])["cache_entry_id"] == "faq:shipping"
+    assert [s[:2] for s in seen[1:]] == [
+        ("GET", "/v1/monitor/entries-to-refresh"),
+        ("POST", f"/v1/monitor/entries-to-refresh/{'k' * 32}/resolve"),
+    ]
 
 
 def test_finetune_passes_query_params():
