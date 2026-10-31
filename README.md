@@ -9,9 +9,13 @@ operations for semantic caches. It checks the cache hits a similarity threshold 
 then keeps your cache right after launch.
 
 - **Verify the uncertain hits.** Given a query and a candidate cached answer, approve or
-  reject serving it, so a match that is *close but wrong* doesn't become a silent error.
-- **Know your real error rate.** Randomized audits of approved hits give an upper bound on
-  how often a served answer is wrong, measured on your traffic.
+  reject serving it in tens of milliseconds, so a match that is *close but wrong* doesn't
+  become a silent error. Fine-tuned on your own feedback.
+- **Know your real error rate.** Randomized audits of approved hits give an exact
+  (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your
+  traffic, not a benchmark.
+- **Certified thresholds.** Certify a threshold with Conformal Risk Control at fine-tune
+  time, and optionally let an online (ACI) threshold follow what the audits find.
 - **Catch drift and recalibrate.** When traffic moves away from what the verifier learned,
   you're alerted, and on Managed plans it is retrained on your feedback automatically.
 - **Know which entries to fix.** `entries_to_refresh()` lists the cache entries your
