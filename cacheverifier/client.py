@@ -312,6 +312,7 @@ class CacheVerifier:
         similarity_score: float | None = None,
         cached_query: str | None = None,
         verification_id: int | None = None,
+        cache_entry_id: str | None = None,
         stale: bool = False,
         idempotency_key: str | None = None,
     ) -> int:
@@ -328,6 +329,8 @@ class CacheVerifier:
         - `cached_query`: the cached entry's own original query, if you have it.
         - `verification_id`: from the `VerifyResult` this feedback is about
           (always for an `audit` result) -- it ties the label to that verdict.
+        - `cache_entry_id`: your own key for the cache entry the answer came
+          from; `entries_to_refresh()` hands it back.
         - `stale`: set instead of a bare `was_correct=False` when the answer
           is wrong ONLY because a fact changed (price, date, ...), not a
           semantic mismatch. Stale rows are excluded from training and drift.
@@ -340,7 +343,12 @@ class CacheVerifier:
             "stale": stale,
         }
         payload.update(
-            _drop_none(similarity_score=similarity_score, cached_query=cached_query, verification_id=verification_id)
+            _drop_none(
+                similarity_score=similarity_score,
+                cached_query=cached_query,
+                verification_id=verification_id,
+                cache_entry_id=cache_entry_id,
+            )
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return int(self._post("/v1/feedback", json=payload, headers=headers)["id"])
@@ -348,7 +356,8 @@ class CacheVerifier:
     def feedback_batch(self, items: Iterable[dict[str, Any]]) -> list[int]:
         """Bulk-upload feedback rows (max 500). Each item is a dict with
         `query`, `candidate_answer`, `was_correct`, and optionally
-        `similarity_score` / `stale`. Returns the created row ids.
+        `similarity_score` / `cached_query` / `cache_entry_id` / `stale`.
+        Returns the created row ids.
         `POST /v1/feedback/batch`.
         """
         data = self._post("/v1/feedback/batch", json={"items": list(items)})
@@ -411,6 +420,21 @@ class CacheVerifier:
         rows that included `similarity_score`. `GET /v1/monitor/gray-zone-threshold`.
         """
         return self._get("/v1/monitor/gray-zone-threshold")
+
+    def entries_to_refresh(self) -> list[dict[str, Any]]:
+        """Cache entries your feedback reported stale, or wrong more often
+        than right -- refresh or drop them, then `resolve_entry(e["key"])`.
+        Each has `key`, `cache_entry_id` (if you sent one), `reason`
+        (`"stale"` / `"often_wrong"`), the answer, report counts and sample
+        queries. `GET /v1/monitor/entries-to-refresh`.
+        """
+        return list(self._get("/v1/monitor/entries-to-refresh")["entries"])
+
+    def resolve_entry(self, key: str) -> dict[str, Any]:
+        """Mark an entry refreshed: earlier feedback stops counting toward it.
+        `POST /v1/monitor/entries-to-refresh/{key}/resolve`.
+        """
+        return self._post(f"/v1/monitor/entries-to-refresh/{key}/resolve")
 
     def usage(self) -> dict[str, Any]:
         """`GET /v1/usage/status`."""

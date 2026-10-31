@@ -146,6 +146,19 @@ set_llm_cache(
 )
 ```
 
+## Entries to refresh
+
+Send your cache's own key with feedback, and the service tells you which
+entries to fix: ones reported stale, or wrong more often than right.
+
+```python
+cv.feedback(query, cached_answer, was_correct=False, stale=True, cache_entry_id="faq:shipping")
+
+for e in cv.entries_to_refresh():
+    my_cache.delete(e["cache_entry_id"])   # or regenerate the answer
+    cv.resolve_entry(e["key"])
+```
+
 ## Fine-tuning
 
 Once you have ~20+ feedback rows (the service found fine-tuning is often a net negative
@@ -267,6 +280,7 @@ verdict
 | `get_finetune_job(id)` / `list_finetune_jobs()` | `GET /v1/finetune/jobs[/id]` |
 | `activate_model_version(id)` | `POST /v1/finetune/model-versions/{id}/activate` |
 | `drift_status()` | `GET /v1/monitor/drift-status` |
+| `entries_to_refresh()` / `resolve_entry(key)` | `GET /v1/monitor/entries-to-refresh` / `POST .../{key}/resolve` |
 | `gray_zone_threshold()` | `GET /v1/monitor/gray-zone-threshold` |
 | `usage()` / `savings()` | `GET /v1/usage/status` / `/savings` |
 | `LocalVerifier.verify(...)` / `verify_batch(...)` | local; decisions to `POST /v1/verify/decisions` |

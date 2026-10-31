@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+`entries_to_refresh()` lists the cache entries your feedback reported stale,
+or wrong more often than right, and `resolve_entry(key)` marks one refreshed
+(`GET /v1/monitor/entries-to-refresh`, every plan). `feedback()` (on both
+`CacheVerifier` and `LocalVerifier`) takes `cache_entry_id`, your own key for
+the entry, which the list hands back so you can refresh or drop it directly.
+
 ## 0.6.0
 
 New `LocalVerifier` (`pip install "cacheverifier[local]"`, Managed plans):

@@ -475,6 +475,7 @@ class LocalVerifier:
         result: VerifyResult | None = None,
         similarity_score: float | None = None,
         cached_query: str | None = None,
+        cache_entry_id: str | None = None,
         stale: bool = False,
         idempotency_key: str | None = None,
     ) -> int:
@@ -488,6 +489,7 @@ class LocalVerifier:
             similarity_score=similarity_score,
             cached_query=cached_query,
             verification_id=verification_id,
+            cache_entry_id=cache_entry_id,
             stale=stale,
             idempotency_key=idempotency_key,
         )
