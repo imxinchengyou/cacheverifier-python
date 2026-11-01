@@ -11,13 +11,14 @@ then keeps your cache right after launch.
 - **Verify the uncertain hits.** Given a query and a candidate cached answer, approve or
   reject serving it in tens of milliseconds, so a match that is *close but wrong* doesn't
   become a silent error. Fine-tuned on your own feedback.
-- **Know your real error rate.** Randomized audits of approved hits give an exact
+- **Know your real error rate.** Randomized audits of approved hits give a conservative
   (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your
   traffic, not a benchmark.
 - **Certified thresholds.** Certify a threshold with Conformal Risk Control at fine-tune
   time, and optionally let an online (ACI) threshold follow what the audits find.
 - **Catch drift and recalibrate.** When traffic moves away from what the verifier learned,
-  you're alerted, and on Managed plans it is retrained on your feedback automatically.
+  the dashboard flags it; on Team and Scale you also get a webhook alert and it is
+  retrained on your feedback automatically.
 - **Know which entries to fix.** `entries_to_refresh()` lists the cache entries your
   feedback reported stale, or wrong more often than right, with your own cache keys.
 - **Run it in your stack.** On Managed plans, `LocalVerifier` scores with your fine-tuned
@@ -71,8 +72,10 @@ if result.approved:
 else:
     answer = call_your_llm(query)            # not trustworthy — fall through
 
-# Later, once you know if it was actually right (thumbs-down, reopened ticket, ...):
-cv.feedback(query, answer, was_correct=True, similarity_score=0.86)
+# Later, label the cached candidate (not the fresh LLM answer): was it right for this
+# query? (a thumbs-down, a reopened ticket, a reviewer's call)
+cv.feedback(query, candidate, was_correct=candidate_was_right, similarity_score=0.86,
+            verification_id=result.verification_id)
 ```
 
 `verify()` returns a `VerifyResult`:
@@ -295,7 +298,9 @@ verdict
   with `feedback(..., verification_id=r.verification_id)`, or `result=r` on
   `LocalVerifier`. That is what makes the measured error rate real.
 - Fine-tune with `cost_ratio=` (how many times worse a wrong reuse is than an extra LLM
-  call) instead of the default threshold, and turn on ACI once audits are flowing.
+  call) instead of the default threshold. ACI (hosted only) is optional: it lets the
+  threshold follow the audits, but on the one real drifting stream we tested it gave no
+  clear advantage over a fixed threshold.
 - Send `cache_entry_id=` with feedback so `entries_to_refresh()` hands back your keys.
 - At volume, score locally with `LocalVerifier`.
 
