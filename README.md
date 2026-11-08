@@ -14,8 +14,11 @@ then keeps your cache right after launch.
 - **Know your real error rate.** Randomized audits of approved hits give a conservative
   (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your
   traffic, not a benchmark.
-- **Certified thresholds.** Certify a threshold with Conformal Risk Control at fine-tune
-  time, and optionally let an online (ACI) threshold follow what the audits find.
+- **Certified thresholds.** At fine-tune time, Conformal Risk Control can report a threshold
+  that keeps false reuses under a target you set. It is informational (`verify()` doesn't
+  apply it), holds only while traffic resembles the calibration data, and covers only the
+  hits you send to `verify()`, not the ones your cache serves on similarity alone. An
+  optional online (ACI) threshold does change decisions, following what the audits find.
 - **Catch drift and recalibrate.** When traffic moves away from what the verifier learned,
   the dashboard flags it; on Team and Scale you also get a webhook alert and it is
   retrained on your feedback automatically.
@@ -36,7 +39,9 @@ zone", where a plain threshold match might be wrong.
 
 - Docs / API reference: <https://www.cacheverifier.com/docs>
 - Why similarity ≠ correctness: <https://www.cacheverifier.com/why-similarity-fails>
-- The research behind it (paper + benchmarks): <https://github.com/imxinchengyou/CacheVerifier>
+- The research behind it (four papers, code and raw results): <https://github.com/imxinchengyou/CacheVerifier>
+- TypeScript / Node: no npm package yet; the docs have a dependency-free `fetch` client and a
+  LangChain.js cache wrapper to copy: <https://www.cacheverifier.com/docs#typescript>
 
 ## Install
 
@@ -71,6 +76,10 @@ if result.approved:
     answer = candidate                       # verified hit — skip the LLM call
 else:
     answer = call_your_llm(query)            # not trustworthy — fall through
+    if result.audit:                         # a randomized audit of an approval: report whether
+        cv.feedback(query, candidate,        # the cached answer matched the fresh one
+                    was_correct=same_answer(answer, candidate),
+                    verification_id=result.verification_id)
 
 # Later, label the cached candidate (not the fresh LLM answer): was it right for this
 # query? (a thumbs-down, a reopened ticket, a reviewer's call)
@@ -83,7 +92,10 @@ cv.feedback(query, candidate, was_correct=candidate_was_right, similarity_score=
 | field | meaning |
 |---|---|
 | `approved` | serve the cached answer (`True`) or fall through (`False`) |
-| `score` / `threshold` | `approved` is `score >= threshold` |
+| `audit` | `True` when an approval was drawn for a randomized audit, so `approved` is `False`: call your LLM, serve its answer, and report whether the cached one matched |
+| `verification_id` | set while auditing is on; pass it to `feedback()` |
+| `score` / `threshold` | with `decision_rule="threshold"`, `approved` is `score >= threshold` |
+| `decision_rule` | `"threshold"`, `"joint"` / `"joint_gap"` (a fitted rule that also uses your `similarity_score`), `"aci"` (online threshold), or `"cold_start"` |
 | `model_version` | `"stock"`, `"v<id>"` (fine-tuned), `"cold_start_fail_closed"` / `"cold_start_auto_pending"`, or `"verify_unavailable"` |
 | `latency_ms` | server-side inference time |
 | `degraded` | `True` when the call failed and this result was synthesized client-side |
@@ -257,12 +269,14 @@ fully offline. `--emit-summary` writes an aggregate-only JSON file (AUCs, counts
 no query or answer text) that's safe to share for a human read.
 
 **Choosing the base model.** `--base-model` takes the same values as the hosted
-service's `base_model` fine-tune parameter, so local and hosted numbers stay comparable:
+service's `base_model` fine-tune parameter. The defaults differ: the CLI starts from
+`ms_marco`, hosted fine-tunes from `nli`. To compare a local run with a hosted fine-tune,
+pass `--base-model nli`.
 
 | `--base-model` | model | use for |
 |---|---|---|
-| `ms_marco` (default) | `cross-encoder/ms-marco-MiniLM-L6-v2` | English traffic |
-| `nli` | `cross-encoder/nli-MiniLM2-L6-H768` | English; entailment pretraining, stronger on negation / entity swaps |
+| `ms_marco` (CLI default) | `cross-encoder/ms-marco-MiniLM-L6-v2` | English traffic |
+| `nli` (hosted default) | `cross-encoder/nli-MiniLM2-L6-H768` | English; entailment pretraining, stronger on negation / entity swaps |
 | `multilingual` | `BAAI/bge-reranker-base` | Chinese and other non-English traffic (~6 GB RAM to fine-tune) |
 | `multilingual_small` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | same, smaller (~3 GB RAM) |
 
@@ -312,6 +326,9 @@ verdict
 - Verify endpoints allow about **20 requests/second per API key**. Use `verify_batch()` or
   `LocalVerifier` beyond that.
 - No formal uptime SLA yet; `verify()` fails closed by default (see above).
+- The shared stock model (`cross-encoder/ms-marco-MiniLM-L6-v2`) is Apache-2.0 but trained
+  on MS MARCO, whose terms describe it as for non-commercial research. Fine-tunes start from
+  the NLI base (`cross-encoder/nli-MiniLM2-L6-H768`, Apache-2.0) by default.
 
 ## API surface
 
