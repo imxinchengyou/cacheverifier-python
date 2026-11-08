@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+README only, no code change, so the PyPI page matches the docs: the
+`VerifyResult` table lists `audit`, `verification_id` and `decision_rule`;
+the quickstart reports audited calls; certified thresholds are described as
+informational, valid while traffic resembles the calibration data, and
+covering only verified hits; the offline Health Check notes that the CLI
+defaults to `ms_marco` while hosted fine-tunes default to `nli`; known limits
+cover the stock model's MS MARCO training-data terms.
+
 ## 0.7.0
 
 `entries_to_refresh()` lists the cache entries your feedback reported stale,
