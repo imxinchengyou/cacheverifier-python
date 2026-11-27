@@ -29,9 +29,14 @@ DEFAULT_VERIFY_TIMEOUT = 1.0
 #: failed (timeout / connection error / 5xx) and the client fell back.
 VERIFY_UNAVAILABLE = "verify_unavailable"
 
+#: model_version prefix the API uses when no model ran because the workspace
+#: is still in cold start ("cold_start_fail_closed" / "cold_start_auto_pending").
+COLD_START_PREFIX = "cold_start_"
+
 _log = logging.getLogger(__name__)
 
 __all__ = [
+    "COLD_START_PREFIX",
     "DEFAULT_BASE_URL",
     "DEFAULT_TIMEOUT",
     "DEFAULT_VERIFY_TIMEOUT",
@@ -102,6 +107,8 @@ class VerifyResult:
       (default `False` -> `approved=False`, i.e. fall through to your LLM).
     - `notice`: a plain-language reason when no model decided the call (cold
       start); None otherwise.
+    - `cold_start` (property): True when no model decided the call, i.e.
+      `model_version` is `"cold_start_..."`.
     - `shadow`: on a cold-start call, what the shared stock model would have
       decided (a `ShadowVerdict`); None otherwise, and on servers that don't
       send it.
@@ -128,6 +135,14 @@ class VerifyResult:
     verification_id: int | None = None
     local_decision: str | None = None
     """`LocalVerifier` only: its handle for this decision until upload."""
+
+    @property
+    def cold_start(self) -> bool:
+        """True when no model decided this call: the workspace has no model
+        of its own yet and runs fail-closed, so `approved` is always False
+        and `notice` says what to do next. A verdict from the shared stock
+        model is not a cold start in this sense: a model did run."""
+        return self.model_version.startswith(COLD_START_PREFIX)
 
     @classmethod
     def _from_json(cls, d: dict[str, Any]) -> VerifyResult:

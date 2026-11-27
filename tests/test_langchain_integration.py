@@ -88,3 +88,65 @@ def test_user_question_falls_back_to_the_raw_prompt():
 def test_needs_a_key_or_a_client():
     with pytest.raises(ValueError):
         VerifiedCache(InMemoryCache())
+
+
+_COLD_START = {
+    "approved": False,
+    "score": 0.0,
+    "threshold": 0.0,
+    "model_version": "cold_start_auto_pending",
+    "latency_ms": 0.0,
+    "decision_rule": "cold_start",
+    "notice": "Run a Health Check to let the stock model decide.",
+}
+
+
+def _cold(cold_start: str | None = None) -> VerifiedCache:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_COLD_START)
+
+    client = CacheVerifier(api_key="cv_test", transport=httpx.MockTransport(handler))
+    kwargs = {} if cold_start is None else {"cold_start": cold_start}
+    return VerifiedCache(InMemoryCache(), client=client, **kwargs)
+
+
+def test_cold_start_serves_the_wrapped_caches_hit_by_default_and_warns_once(caplog):
+    cache = _cold()
+    cache.update("when does my flight board", "llm", [Generation(text="40 minutes before departure.")])
+    with caplog.at_level("WARNING", logger="cacheverifier.integrations"):
+        assert cache.lookup("when does my flight board", "llm")[0].text == "40 minutes before departure."
+        assert asyncio.run(cache.alookup("when does my flight board", "llm"))[0].text == "40 minutes before departure."
+    warnings = [r for r in caplog.records if r.name == "cacheverifier.integrations"]
+    assert len(warnings) == 1
+    assert "cold_start_auto_pending" in warnings[0].getMessage()
+    assert "Run a Health Check" in warnings[0].getMessage()
+
+
+def test_cold_start_reject_makes_every_hit_a_miss():
+    cache = _cold("reject")
+    cache.update("q", "llm", [Generation(text="a")])
+    assert cache.lookup("q", "llm") is None
+
+
+def test_a_stock_model_rejection_is_not_a_cold_start():
+    cache = _verified(False)  # model_version "stock": a model ran and said no
+    cache.update("q", "llm", [Generation(text="a")])
+    assert cache.lookup("q", "llm") is None
+
+
+def test_an_audited_call_still_falls_through_during_serve_mode():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"approved": False, "audit": True, "verification_id": 7, "score": 3.0, "latency_ms": 5.0,
+                  "model_version": "v12", "threshold": 0.0},
+        )
+
+    cache = VerifiedCache(InMemoryCache(), client=CacheVerifier(api_key="cv_test", transport=httpx.MockTransport(handler)))
+    cache.update("q", "llm", [Generation(text="a")])
+    assert cache.lookup("q", "llm") is None
+
+
+def test_bad_cold_start_mode_is_rejected():
+    with pytest.raises(ValueError):
+        VerifiedCache(InMemoryCache(), api_key="cv_test", cold_start="open")

@@ -24,6 +24,14 @@ call times out or the service is unreachable, the hit is rejected by
 default (a verifier outage becomes a normal cache miss); pass
 `fail_open=True` to serve it instead.
 
+Until your workspace has a model of its own, the service decides nothing
+(cold start) and would reject every hit, which switches your cache off. So
+by default a cold-start hit is served exactly as the wrapped cache returned
+it, the same as without `VerifiedCache`, and the first one is logged as a
+warning. Pass `cold_start="reject"` to fall through to your model instead:
+do that if you loosened the wrapped cache's similarity threshold because a
+verifier would be checking its hits.
+
 `langchain-core` is an optional dependency -- `pip install "cacheverifier[langchain]"`.
 """
 
@@ -39,6 +47,7 @@ from cacheverifier.client import (
     DEFAULT_VERIFY_TIMEOUT,
     CacheVerifier,
 )
+from cacheverifier.integrations._cold_start import ColdStartNotice, check_mode
 
 try:
     from langchain_core.caches import RETURN_VAL_TYPE, BaseCache
@@ -96,7 +105,10 @@ class VerifiedCache(BaseCache):
         timeout: float = DEFAULT_TIMEOUT,
         verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
         fail_open: bool = False,
+        cold_start: str = "serve",
     ) -> None:
+        self.cold_start = check_mode(cold_start)
+        self._cold_start_notice = ColdStartNotice("VerifiedCache")
         if client is None:
             if not api_key:
                 raise ValueError("pass api_key or client")
@@ -112,7 +124,18 @@ class VerifiedCache(BaseCache):
 
     def _approved(self, prompt: str, hit: RETURN_VAL_TYPE) -> bool:
         answer = "\n".join(generation.text for generation in hit)
-        return self.client.verify(user_question(prompt), answer).approved
+        result = self.client.verify(user_question(prompt), answer)
+        if result.cold_start:
+            serve = self.cold_start == "serve"
+            self._cold_start_notice.seen(
+                result,
+                "serving the wrapped cache's hits unchanged until a model is ready "
+                "(cold_start='reject' falls through to your model instead)"
+                if serve
+                else "every hit falls through to your model until one is ready (cold_start='reject')",
+            )
+            return serve
+        return result.approved
 
     def lookup(self, prompt: str, llm_string: str) -> RETURN_VAL_TYPE | None:
         hit = self.cache.lookup(prompt, llm_string)

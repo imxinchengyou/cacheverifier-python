@@ -8,12 +8,21 @@ GPTCache pipeline's `similarity_evaluation=` argument, no upstream PR
 required.
 
     from gptcache import cache
+    from gptcache.similarity_evaluation import SearchDistanceEvaluation
     from cacheverifier.integrations.gptcache import CacheVerifierEvaluation
 
     cache.init(
-        similarity_evaluation=CacheVerifierEvaluation(api_key="cv_..."),
+        similarity_evaluation=CacheVerifierEvaluation(
+            api_key="cv_...",
+            fallback=SearchDistanceEvaluation(),  # the evaluator you used before
+        ),
         ...
     )
+
+`fallback` is the evaluator this one replaces. With it, GPTCache keeps
+deciding exactly as before while your workspace has no model of its own
+(cold start), and `direct_hit` can skip the verify call for hits that are
+close enough on their own. Without it, every cold-start hit is a miss.
 
 `gptcache` is an optional dependency -- `pip install "cacheverifier[gptcache]"`.
 """
@@ -28,6 +37,7 @@ from cacheverifier.client import (
     DEFAULT_VERIFY_TIMEOUT,
     CacheVerifier,
 )
+from cacheverifier.integrations._cold_start import ColdStartNotice, check_mode
 
 try:
     from gptcache.similarity_evaluation import SimilarityEvaluation as _GPTCacheBase
@@ -38,10 +48,28 @@ except ImportError:  # keep importable without gptcache installed
 class CacheVerifierEvaluation(_GPTCacheBase):
     """Drop-in replacement for GPTCache's built-in similarity evaluators.
 
-    `evaluation()` returns 1.0 (reuse) or 0.0 (don't) -- binary, because the
-    hosted verifier already makes a binary approve/reject call per gray-zone
-    hit rather than a softened similarity score. Callers who want GPTCache's
-    own threshold logic on top can wrap this rather than replace it.
+    `evaluation()` returns 1.0 (reuse) or 0.0 (don't) for a verified hit --
+    binary, because the hosted verifier already makes a binary approve/reject
+    call per gray-zone hit rather than a softened similarity score.
+
+    `fallback` (optional, recommended): the GPTCache evaluator you ran before,
+    e.g. `SearchDistanceEvaluation()`. GPTCache applies its
+    `similarity_threshold` to whatever `evaluation()` returns, so replacing
+    your evaluator also drops the similarity check it did. `fallback` puts it
+    back where it is needed:
+
+    - cold start (no model of your own yet, so the service decides nothing):
+      with `cold_start="serve"` (the default) `evaluation()` returns the
+      fallback's own score, rescaled so GPTCache's `similarity_threshold`
+      accepts exactly the hits it accepted before. The first such call is
+      logged as a warning. `cold_start="reject"` makes every cold-start hit a
+      miss instead: do that if you loosened your similarity setup because a
+      verifier would be checking the hits. Without a fallback there is no
+      earlier decision to keep, so cold-start hits are misses either way.
+    - `direct_hit` (needs `fallback`): a hit whose rescaled fallback score is
+      at least this is served without calling `/v1/verify`, the way a
+      gray-zone setup trusts hits above its upper bound. Same 0-1 scale as
+      GPTCache's `similarity_threshold`.
 
     If the verify call times out or the service is unreachable, `evaluation()`
     returns 0.0 (don't reuse) by default -- a verifier outage falls through to
@@ -57,7 +85,21 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         timeout: float = DEFAULT_TIMEOUT,
         verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
         fail_open: bool = False,
+        fallback: Any = None,
+        cold_start: str = "serve",
+        direct_hit: float | None = None,
     ) -> None:
+        if direct_hit is not None and fallback is None:
+            raise ValueError("direct_hit needs fallback: it is measured on the fallback evaluator's score")
+        if fallback is not None:
+            low, high = fallback.range()
+            if not high > low:
+                raise ValueError(f"fallback.range() must be increasing, got {(low, high)!r}")
+            self._fallback_span = float(high - low)
+        self.fallback = fallback
+        self.cold_start = check_mode(cold_start)
+        self.direct_hit = direct_hit
+        self._cold_start_notice = ColdStartNotice("CacheVerifierEvaluation")
         self._cv = CacheVerifier(
             api_key=api_key,
             base_url=base_url,
@@ -66,10 +108,40 @@ class CacheVerifierEvaluation(_GPTCacheBase):
             fail_open=fail_open,
         )
 
-    def evaluation(self, src_dict: dict[str, Any], cache_dict: dict[str, Any], **_kwargs: Any) -> float:
+    def _fallback_score(self, src_dict: dict[str, Any], cache_dict: dict[str, Any], **kwargs: Any) -> float:
+        """The fallback's score divided by the width of its range: GPTCache
+        accepts a hit when rank >= (max - min) * similarity_threshold, so on
+        this evaluator's (0, 1) range the rescaled score passes exactly when
+        the raw one passed on the fallback's own range. Exact for any range
+        that starts at 0, which every built-in GPTCache evaluator's does."""
+        return float(self.fallback.evaluation(src_dict, cache_dict, **kwargs)) / self._fallback_span
+
+    def evaluation(self, src_dict: dict[str, Any], cache_dict: dict[str, Any], **kwargs: Any) -> float:
+        fallback_score = None
+        if self.fallback is not None:
+            fallback_score = self._fallback_score(src_dict, cache_dict, **kwargs)
+            if self.direct_hit is not None and fallback_score >= self.direct_hit:
+                return 1.0
         query = src_dict.get("question") or src_dict.get("query", "")
         candidate_answer = cache_dict.get("answer", "")
-        return 1.0 if self._cv.verify(query, candidate_answer).approved else 0.0
+        result = self._cv.verify(query, candidate_answer)
+        if result.cold_start:
+            serve = self.cold_start == "serve" and fallback_score is not None
+            if serve:
+                action = (
+                    "deciding hits with your fallback evaluator, as before, until a model is ready "
+                    "(cold_start='reject' makes them misses instead)"
+                )
+            elif self.cold_start == "serve":
+                action = (
+                    "every hit is a miss until a model is ready; pass fallback=<the evaluator you "
+                    "used before> to keep its decisions meanwhile"
+                )
+            else:
+                action = "every hit is a miss until a model is ready (cold_start='reject')"
+            self._cold_start_notice.seen(result, action)
+            return fallback_score if serve and fallback_score is not None else 0.0
+        return 1.0 if result.approved else 0.0
 
     def range(self) -> tuple[float, float]:
         return 0.0, 1.0
