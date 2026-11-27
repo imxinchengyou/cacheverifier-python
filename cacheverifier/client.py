@@ -329,6 +329,7 @@ class CacheVerifier:
         verification_id: int | None = None,
         cache_entry_id: str | None = None,
         stale: bool = False,
+        label_method: str = "human",
         idempotency_key: str | None = None,
     ) -> int:
         """Record whether a served (or considered) hit was actually correct.
@@ -349,14 +350,22 @@ class CacheVerifier:
         - `stale`: set instead of a bare `was_correct=False` when the answer
           is wrong ONLY because a fact changed (price, date, ...), not a
           semantic mismatch. Stale rows are excluded from training and drift.
+        - `label_method`: `"human"` (default: a person, or a signal you vouch
+          for) or `"judge"` (an automatic check decided `was_correct`). Judge
+          labels train fine-tunes but are left out of the certified numbers
+          (audit risk bound, audited CRC threshold, ACI).
         - `idempotency_key`: pass a stable key to make retries safe.
         """
+        if label_method not in ("human", "judge"):
+            raise ValueError(f'label_method must be "human" or "judge", got {label_method!r}')
         payload: dict[str, Any] = {
             "query": query,
             "candidate_answer": candidate_answer,
             "was_correct": was_correct,
             "stale": stale,
         }
+        if label_method != "human":
+            payload["label_method"] = label_method
         payload.update(
             _drop_none(
                 similarity_score=similarity_score,

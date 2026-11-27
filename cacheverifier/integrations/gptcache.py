@@ -29,6 +29,8 @@ close enough on their own. Without it, every cold-start hit is a miss.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from typing import Any
 
 from cacheverifier.client import (
@@ -38,6 +40,7 @@ from cacheverifier.client import (
     CacheVerifier,
 )
 from cacheverifier.integrations._cold_start import ColdStartNotice, check_mode
+from cacheverifier.integrations._reporting import MAX_PENDING
 
 try:
     from gptcache.similarity_evaluation import SimilarityEvaluation as _GPTCacheBase
@@ -100,6 +103,8 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         self.cold_start = check_mode(cold_start)
         self.direct_hit = direct_hit
         self._cold_start_notice = ColdStartNotice("CacheVerifierEvaluation")
+        self._unserved_lock = threading.Lock()
+        self._unserved: OrderedDict[tuple[str, str], int] = OrderedDict()
         self._cv = CacheVerifier(
             api_key=api_key,
             base_url=base_url,
@@ -125,6 +130,8 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         query = src_dict.get("question") or src_dict.get("query", "")
         candidate_answer = cache_dict.get("answer", "")
         result = self._cv.verify(query, candidate_answer)
+        if not result.approved and result.verification_id is not None:
+            self._remember_unserved(query, candidate_answer, result.verification_id)
         if result.cold_start:
             serve = self.cold_start == "serve" and fallback_score is not None
             if serve:
@@ -143,6 +150,13 @@ class CacheVerifierEvaluation(_GPTCacheBase):
             return fallback_score if serve and fallback_score is not None else 0.0
         return 1.0 if result.approved else 0.0
 
+    def _remember_unserved(self, query: str, candidate_answer: str, verification_id: int) -> None:
+        with self._unserved_lock:
+            self._unserved[(query, candidate_answer)] = verification_id
+            self._unserved.move_to_end((query, candidate_answer))
+            while len(self._unserved) > MAX_PENDING:
+                self._unserved.popitem(last=False)
+
     def range(self) -> tuple[float, float]:
         return 0.0, 1.0
 
@@ -152,6 +166,7 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         candidate_answer: str,
         was_correct: bool,
         similarity_score: float | None = None,
+        verification_id: int | None = None,
     ) -> None:
         """Not part of GPTCache's interface -- call it once you know whether
         a served hit was actually correct (a thumbs-down, a reopened
@@ -162,12 +177,23 @@ class CacheVerifierEvaluation(_GPTCacheBase):
         score for this candidate if you still have it when you learn
         `was_correct` -- that is what lets the service later recommend a
         tau_high for your GPTCache config (`gray_zone_threshold()`).
+
+        Audits and rejections: when this evaluator didn't let a hit through
+        (a rejection or a randomized audit), GPTCache calls your LLM. Compare
+        its answer with the cached one and report the result here with the
+        same `query` and `candidate_answer`: the `verification_id` of that
+        verdict is attached for you (it is what completes an audit), unless
+        you pass one yourself.
         """
+        if verification_id is None:
+            with self._unserved_lock:
+                verification_id = self._unserved.pop((query, candidate_answer), None)
         self._cv.feedback(
             query,
             candidate_answer,
             was_correct,
             similarity_score=similarity_score,
+            verification_id=verification_id,
         )
 
     def close(self) -> None:

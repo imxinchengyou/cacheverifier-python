@@ -32,6 +32,21 @@ warning. Pass `cold_start="reject"` to fall through to your model instead:
 do that if you loosened the wrapped cache's similarity threshold because a
 verifier would be checking its hits.
 
+Pass `judge=` to close the loop on hits that weren't served. When a hit is
+rejected or picked for an audit, your model answers anyway; `VerifiedCache`
+sees that answer when LangChain stores it, calls
+`judge(question, cached_answer, fresh_answer)` and reports the verdict as
+feedback (True: the cached answer would have been right, False: it would
+not, None: skip), as `label_method="judge"`. Those labels train fine-tunes;
+the service keeps them out of its certified numbers (an audit answered only
+by the judge still counts as unreported there). It runs in a background
+thread, off your request path.
+
+    def same_answer(question, cached, fresh):
+        return my_llm_judge(question, cached, fresh)  # your own check
+
+    VerifiedCache(cache, api_key="cv_...", judge=same_answer)
+
 `langchain-core` is an optional dependency -- `pip install "cacheverifier[langchain]"`.
 """
 
@@ -48,6 +63,7 @@ from cacheverifier.client import (
     CacheVerifier,
 )
 from cacheverifier.integrations._cold_start import ColdStartNotice, check_mode
+from cacheverifier.integrations._reporting import Judge, RejectedHitReporter
 
 try:
     from langchain_core.caches import RETURN_VAL_TYPE, BaseCache
@@ -92,6 +108,10 @@ def user_question(prompt: str) -> str:
     return prompt
 
 
+def _text(generations: RETURN_VAL_TYPE) -> str:
+    return "\n".join(generation.text for generation in generations)
+
+
 class VerifiedCache(BaseCache):
     """A LangChain cache that verifies another cache's hits before serving them."""
 
@@ -106,6 +126,7 @@ class VerifiedCache(BaseCache):
         verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
         fail_open: bool = False,
         cold_start: str = "serve",
+        judge: Judge | None = None,
     ) -> None:
         self.cold_start = check_mode(cold_start)
         self._cold_start_notice = ColdStartNotice("VerifiedCache")
@@ -121,10 +142,18 @@ class VerifiedCache(BaseCache):
             )
         self.cache = cache
         self.client = client
+        self._reporter = RejectedHitReporter(client, judge) if judge is not None else None
 
-    def _approved(self, prompt: str, hit: RETURN_VAL_TYPE) -> bool:
-        answer = "\n".join(generation.text for generation in hit)
-        result = self.client.verify(user_question(prompt), answer)
+    def _approved(self, prompt: str, llm_string: str, hit: RETURN_VAL_TYPE) -> bool:
+        answer = _text(hit)
+        question = user_question(prompt)
+        result = self.client.verify(question, answer)
+        served = self._served(result)
+        if not served and self._reporter is not None:
+            self._reporter.remember((prompt, llm_string), question, answer, result)
+        return served
+
+    def _served(self, result: Any) -> bool:
         if result.cold_start:
             serve = self.cold_start == "serve"
             self._cold_start_notice.seen(
@@ -141,20 +170,29 @@ class VerifiedCache(BaseCache):
         hit = self.cache.lookup(prompt, llm_string)
         if not hit:
             return hit
-        return hit if self._approved(prompt, hit) else None
+        return hit if self._approved(prompt, llm_string, hit) else None
 
     async def alookup(self, prompt: str, llm_string: str) -> RETURN_VAL_TYPE | None:
         hit = await self.cache.alookup(prompt, llm_string)
         if not hit:
             return hit
-        approved = await asyncio.get_running_loop().run_in_executor(None, self._approved, prompt, hit)
+        approved = await asyncio.get_running_loop().run_in_executor(None, self._approved, prompt, llm_string, hit)
         return hit if approved else None
 
     def update(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
         self.cache.update(prompt, llm_string, return_val)
+        if self._reporter is not None:
+            self._reporter.fresh_answer((prompt, llm_string), _text(return_val))
 
     async def aupdate(self, prompt: str, llm_string: str, return_val: RETURN_VAL_TYPE) -> None:
         await self.cache.aupdate(prompt, llm_string, return_val)
+        if self._reporter is not None:
+            self._reporter.fresh_answer((prompt, llm_string), _text(return_val))
+
+    def close(self) -> None:
+        """Wait for queued `judge` reports to finish (only needed with `judge=`)."""
+        if self._reporter is not None:
+            self._reporter.close()
 
     def clear(self, **kwargs: Any) -> None:
         self.cache.clear(**kwargs)

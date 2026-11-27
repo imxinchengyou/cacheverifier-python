@@ -175,6 +175,37 @@ first time. Pass `cold_start="reject"` to fall through to your model instead,
 for example if you loosened the wrapped cache's similarity threshold because
 a verifier would be checking its hits.
 
+### Reporting hits that weren't served
+
+When a hit is rejected or picked for a randomized audit, your model answers
+anyway. Pass `judge=` and `VerifiedCache` uses that fresh answer: when
+LangChain stores it, `judge(question, cached_answer, fresh_answer)` decides
+whether the cached answer would have been right (`True` / `False`, or `None`
+to skip), and the verdict is sent as feedback, linked to the verdict it is
+about. It gives fine-tuning labels on audited and rejected hits, which are
+otherwise rare. It runs in a background thread, off your request path, and a
+failing judge or report is logged, never raised.
+
+These reports are sent as `label_method="judge"`. Judge labels train your
+fine-tunes, but the service leaves them out of every number it certifies
+(the audit risk bound, the audited CRC threshold, ACI) until a judge can be
+checked: a judge that calls wrong answers right would make those numbers look
+better than they are. An audit answered only by the judge still counts as
+unreported there; to complete audits, report them yourself with
+`feedback(..., verification_id=...)`.
+
+```python
+def same_answer(question, cached, fresh):  # -> True, False, or None to skip
+    ...  # your own check, e.g. an LLM call or a rule for your domain
+
+set_llm_cache(VerifiedCache(cache, api_key="cv_...", judge=same_answer))
+```
+
+The judge is yours because "the same answer" depends on your domain: the
+cheap automatic checks we measured (answer embeddings, an NLI model) did no
+better than the query similarity your cache already has. Without `judge`,
+nothing is reported.
+
 ## GPTCache
 
 Drop the verifier into a GPTCache pipeline as its similarity evaluator — no fork required:
@@ -204,6 +235,12 @@ so replacing your evaluator also drops the similarity check it did. With
   Without a fallback, cold-start hits are always misses.
 - `direct_hit` serves hits whose fallback score is at least that high without
   a verify call. It uses the same 0–1 scale as GPTCache's `similarity_threshold`.
+
+When the evaluator doesn't let a hit through (a rejection, or a randomized
+audit), GPTCache calls your LLM. Compare its answer with the cached one and
+call `report_feedback(query, cached_answer, was_correct=...)` with the same
+query and cached answer: the evaluator attaches that verdict's
+`verification_id` for you, which is what completes an audit.
 
 See [`examples/gptcache_example.py`](examples/gptcache_example.py).
 

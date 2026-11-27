@@ -150,3 +150,81 @@ def test_an_audited_call_still_falls_through_during_serve_mode():
 def test_bad_cold_start_mode_is_rejected():
     with pytest.raises(ValueError):
         VerifiedCache(InMemoryCache(), api_key="cv_test", cold_start="open")
+
+
+def _judged(verdict_json: dict, judge, posted: list) -> VerifiedCache:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path == "/v1/feedback":
+            posted.append(body)
+            return httpx.Response(200, json={"id": 1})
+        return httpx.Response(200, json=verdict_json)
+
+    client = CacheVerifier(api_key="cv_test", transport=httpx.MockTransport(handler))
+    return VerifiedCache(InMemoryCache(), client=client, judge=judge)
+
+
+_AUDIT = {"approved": False, "audit": True, "verification_id": 7, "score": 3.0, "latency_ms": 5.0,
+          "model_version": "v12", "threshold": 0.0}
+
+
+def test_judge_reports_an_audited_hit_with_its_verification_id():
+    posted: list = []
+    seen: list = []
+
+    def judge(question, cached, fresh):
+        seen.append((question, cached, fresh))
+        return cached.split(".")[0] == fresh.split(".")[0]
+
+    cache = _judged(_AUDIT, judge, posted)
+    model = FakeListChatModel(responses=["Gate B12.", "Gate B12. Boarding 9:20."], cache=cache)
+    assert model.invoke("which gate is my flight").content == "Gate B12."  # miss, cached
+    assert model.invoke("which gate is my flight").content == "Gate B12. Boarding 9:20."  # audited -> model
+    cache.close()
+    assert seen == [("which gate is my flight", "Gate B12.", "Gate B12. Boarding 9:20.")]
+    assert posted == [{"query": "which gate is my flight", "candidate_answer": "Gate B12.", "was_correct": True,
+                       "stale": False, "label_method": "judge", "verification_id": 7}]
+
+
+def test_judge_reports_a_rejected_hit_in_the_async_path_too():
+    posted: list = []
+    rejected = {**_AUDIT, "audit": False, "score": -2.0}
+    cache = _judged(rejected, lambda q, c, f: False, posted)
+    asyncio.run(cache.aupdate("q", "llm", [Generation(text="old")]))
+    assert asyncio.run(cache.alookup("q", "llm")) is None
+    asyncio.run(cache.aupdate("q", "llm", [Generation(text="new")]))
+    cache.close()
+    assert [(p["candidate_answer"], p["was_correct"], p["verification_id"]) for p in posted] == [("old", False, 7)]
+
+
+def test_served_hits_and_skipped_verdicts_are_not_reported():
+    posted: list = []
+    approved = {**_AUDIT, "approved": True, "audit": False}
+    cache = _judged(approved, lambda q, c, f: True, posted)
+    cache.update("q", "llm", [Generation(text="a")])
+    assert cache.lookup("q", "llm") is not None
+    cache.update("q", "llm", [Generation(text="b")])
+
+    skipping = _judged(_AUDIT, lambda q, c, f: None, posted)
+    skipping.update("q", "llm", [Generation(text="a")])
+    assert skipping.lookup("q", "llm") is None
+    skipping.update("q", "llm", [Generation(text="b")])
+    cache.close()
+    skipping.close()
+    assert posted == []
+
+
+def test_a_failing_judge_is_logged_not_raised(caplog):
+    posted: list = []
+
+    def judge(q, c, f):
+        raise RuntimeError("judge down")
+
+    cache = _judged(_AUDIT, judge, posted)
+    cache.update("q", "llm", [Generation(text="a")])
+    assert cache.lookup("q", "llm") is None
+    with caplog.at_level("WARNING", logger="cacheverifier.integrations"):
+        cache.update("q", "llm", [Generation(text="b")])  # must not raise
+        cache.close()
+    assert posted == []
+    assert "judge down" in caplog.text

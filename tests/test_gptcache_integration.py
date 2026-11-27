@@ -147,3 +147,26 @@ def test_a_model_verdict_still_decides_when_a_fallback_is_set():
 def test_direct_hit_needs_a_fallback():
     with pytest.raises(ValueError):
         CacheVerifierEvaluation(api_key="cv_test", direct_hit=0.9)
+
+
+def test_report_feedback_attaches_the_verification_id_of_an_unserved_hit():
+    import json
+
+    posted: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/feedback":
+            posted.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": 1})
+        return httpx.Response(
+            200,
+            json={"approved": False, "audit": True, "verification_id": 41, "score": 2.0, "latency_ms": 5.0,
+                  "model_version": "v3", "threshold": 0.0},
+        )
+
+    ev, _ = _eval_with(handler)
+    assert ev.evaluation({"question": "q"}, {"answer": "a"}) == 0.0
+    ev.report_feedback("q", "a", was_correct=True)
+    ev.report_feedback("q", "a", was_correct=True)  # already linked: no id the second time
+    ev.report_feedback("other", "a", was_correct=False, verification_id=5)
+    assert [p.get("verification_id") for p in posted] == [41, None, 5]

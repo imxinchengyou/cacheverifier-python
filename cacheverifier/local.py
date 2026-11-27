@@ -477,6 +477,7 @@ class LocalVerifier:
         cached_query: str | None = None,
         cache_entry_id: str | None = None,
         stale: bool = False,
+        label_method: str = "human",
         idempotency_key: str | None = None,
     ) -> int:
         """`CacheVerifier.feedback`, linked to `result` when given (always
@@ -491,6 +492,7 @@ class LocalVerifier:
             verification_id=verification_id,
             cache_entry_id=cache_entry_id,
             stale=stale,
+            label_method=label_method,
             idempotency_key=idempotency_key,
         )
 

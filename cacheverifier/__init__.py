@@ -19,7 +19,7 @@ Research behind it: https://github.com/imxinchengyou/CacheVerifier
 from cacheverifier.client import CacheVerifier, CacheVerifierError, ShadowVerdict, VerifyResult
 from cacheverifier.local import LocalVerifier, ModelCheckFailed
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = [
     "CacheVerifier",
     "CacheVerifierError",
