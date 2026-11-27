@@ -53,3 +53,97 @@ def test_report_feedback_posts_similarity_score():
     assert seen["path"] == "/v1/feedback"
     assert seen["body"]["similarity_score"] == 0.9
     assert seen["body"]["was_correct"] is False
+
+
+import logging
+
+import pytest
+
+_COLD_START = {
+    "approved": False,
+    "score": 0.0,
+    "threshold": 0.0,
+    "model_version": "cold_start_fail_closed",
+    "latency_ms": 0.0,
+    "decision_rule": "cold_start",
+    "notice": "No model of your own yet.",
+}
+
+
+class _Distance:
+    """Stands in for GPTCache's SearchDistanceEvaluation(max_distance=4.0)."""
+
+    def evaluation(self, src_dict, cache_dict, **_kwargs):
+        distance, _ = cache_dict["search_result"]
+        return 4.0 - min(distance, 4.0)
+
+    def range(self):
+        return 0.0, 4.0
+
+
+def _eval_with(handler, **kwargs) -> tuple[CacheVerifierEvaluation, list]:
+    calls: list = []
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return handler(request)
+
+    ev = CacheVerifierEvaluation(api_key="cv_test", **kwargs)
+    ev._cv._client = httpx.Client(
+        base_url="https://www.cacheverifier.com",
+        headers={"X-API-Key": "cv_test"},
+        transport=httpx.MockTransport(counting),
+    )
+    return ev, calls
+
+
+def _cold(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json=_COLD_START)
+
+
+def test_cold_start_with_fallback_returns_the_fallbacks_rescaled_score(caplog):
+    ev, _ = _eval_with(_cold, fallback=_Distance())
+    with caplog.at_level(logging.WARNING, logger="cacheverifier.integrations"):
+        # distance 0.8 -> fallback 3.2 of 4.0 -> 0.8; GPTCache's default similarity_threshold 0.8
+        # accepted it before (3.2 >= 4.0 * 0.8) and accepts it now (0.8 >= 1.0 * 0.8)
+        assert ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (0.8, 1)}) == pytest.approx(0.8)
+        assert ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (2.0, 1)}) == pytest.approx(0.5)
+    warnings = [r for r in caplog.records if r.name == "cacheverifier.integrations"]
+    assert len(warnings) == 1
+    assert "fallback evaluator" in warnings[0].getMessage()
+
+
+def test_cold_start_without_fallback_is_a_miss_and_says_how_to_keep_hits(caplog):
+    ev, _ = _eval_with(_cold)
+    with caplog.at_level(logging.WARNING, logger="cacheverifier.integrations"):
+        assert ev.evaluation({"question": "q"}, {"answer": "a"}) == 0.0
+    assert "pass fallback=" in caplog.records[-1].getMessage()
+
+
+def test_cold_start_reject_ignores_the_fallback():
+    ev, _ = _eval_with(_cold, fallback=_Distance(), cold_start="reject")
+    assert ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (0.0, 1)}) == 0.0
+
+
+def test_direct_hit_skips_the_verify_call():
+    ev, calls = _eval_with(_cold, fallback=_Distance(), direct_hit=0.95)
+    assert ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (0.1, 1)}) == 1.0  # 3.9/4 = 0.975
+    assert calls == []
+    ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (1.0, 1)})  # 0.75: verified
+    assert len(calls) == 1
+
+
+def test_a_model_verdict_still_decides_when_a_fallback_is_set():
+    def rejecting(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"approved": False, "score": -1.0, "latency_ms": 5.0, "model_version": "v3", "threshold": 0.0},
+        )
+
+    ev, _ = _eval_with(rejecting, fallback=_Distance())
+    assert ev.evaluation({"question": "q"}, {"answer": "a", "search_result": (0.0, 1)}) == 0.0
+
+
+def test_direct_hit_needs_a_fallback():
+    with pytest.raises(ValueError):
+        CacheVerifierEvaluation(api_key="cv_test", direct_hit=0.9)

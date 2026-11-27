@@ -100,10 +100,13 @@ cv.feedback(query, candidate, was_correct=candidate_was_right, similarity_score=
 | `latency_ms` | server-side inference time |
 | `degraded` | `True` when the call failed and this result was synthesized client-side |
 | `notice` | why no model decided the call (cold start); `None` otherwise |
+| `cold_start` | property: `True` when no model decided the call (`model_version` is `"cold_start_..."`) |
 | `shadow` | cold start only: a `ShadowVerdict` with what the shared stock model would have decided. The call is still rejected, so treat it as a preview |
 
 A new account starts in cold start: every call returns `approved=False` until a
-Health Check shows the shared model is accurate enough on your data. Look at
+Health Check shows the shared model is accurate enough on your data. (The
+LangChain and GPTCache integrations hand cold-start hits back to your cache's
+own decision instead, see below.) Look at
 `result.shadow` to see what it would have decided in the meantime:
 
 ```python
@@ -164,20 +167,43 @@ set_llm_cache(
 )
 ```
 
+Until your workspace has a model of its own (cold start), the service
+decides nothing and would reject every hit, which would switch your cache
+off. So during cold start `VerifiedCache` serves each hit exactly as the
+wrapped cache returned it, the same as without it, and logs a warning the
+first time. Pass `cold_start="reject"` to fall through to your model instead,
+for example if you loosened the wrapped cache's similarity threshold because
+a verifier would be checking its hits.
+
 ## GPTCache
 
 Drop the verifier into a GPTCache pipeline as its similarity evaluator — no fork required:
 
 ```python
 from gptcache import cache
+from gptcache.similarity_evaluation import SearchDistanceEvaluation
 from cacheverifier.integrations.gptcache import CacheVerifierEvaluation
 
-evaluator = CacheVerifierEvaluation(api_key="cv_...")
+evaluator = CacheVerifierEvaluation(
+    api_key="cv_...",
+    fallback=SearchDistanceEvaluation(),  # the evaluator you used before
+    direct_hit=0.95,                      # optional: trust hits this close without verifying
+)
 cache.init(similarity_evaluation=evaluator, ...)
 
 # when you learn a served hit's real outcome:
 evaluator.report_feedback(query, answer, was_correct=False, similarity_score=0.9)
 ```
+
+GPTCache applies its `similarity_threshold` to whatever the evaluator returns,
+so replacing your evaluator also drops the similarity check it did. With
+`fallback` set:
+
+- during cold start, hits are decided by the fallback exactly as before (the
+  first one logs a warning); `cold_start="reject"` makes them misses instead.
+  Without a fallback, cold-start hits are always misses.
+- `direct_hit` serves hits whose fallback score is at least that high without
+  a verify call. It uses the same 0–1 scale as GPTCache's `similarity_threshold`.
 
 See [`examples/gptcache_example.py`](examples/gptcache_example.py).
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0
+
+The integrations no longer switch your cache off during cold start. While a
+workspace has no model of its own, `/v1/verify` rejects every call; an
+integration sends every hit, so that rejected all of them, silently.
+
+- `VerifiedCache` (LangChain) now serves cold-start hits exactly as the
+  wrapped cache returned them, and logs the service's notice once. Pass
+  `cold_start="reject"` for the old behavior.
+- `CacheVerifierEvaluation` (GPTCache) takes `fallback=`, the evaluator it
+  replaces (e.g. `SearchDistanceEvaluation()`): during cold start GPTCache
+  decides with it exactly as before. Without a fallback, cold-start hits stay
+  misses, now with a warning saying how to keep them. `direct_hit=` serves
+  hits whose fallback score is at least that high without a verify call.
+- `VerifyResult.cold_start`: True when no model decided the call.
+
 ## 0.7.1
 
 README only, no code change, so the PyPI page matches the docs: the

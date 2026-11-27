@@ -14,6 +14,7 @@ from gptcache import cache
 from gptcache.adapter.api import get, put
 from gptcache.embedding import Onnx
 from gptcache.manager import CacheBase, VectorBase, get_data_manager
+from gptcache.similarity_evaluation import SearchDistanceEvaluation
 
 from cacheverifier.integrations.gptcache import CacheVerifierEvaluation
 
@@ -23,7 +24,12 @@ data_manager = get_data_manager(
     VectorBase("faiss", dimension=embedding.dimension),
 )
 
-evaluator = CacheVerifierEvaluation(api_key=os.environ["CACHEVERIFIER_API_KEY"])
+# fallback: the evaluator this replaces. It keeps deciding hits while your workspace
+# has no model of its own yet (cold start), instead of every hit becoming a miss.
+evaluator = CacheVerifierEvaluation(
+    api_key=os.environ["CACHEVERIFIER_API_KEY"],
+    fallback=SearchDistanceEvaluation(),
+)
 
 cache.init(
     embedding_func=embedding.to_embeddings,
