@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.0
+
+The integrations can report the hits they didn't serve. Until now they never
+sent feedback, so audited and rejected hits made through them produced no
+labels.
+
+- `VerifiedCache` (LangChain) takes `judge=`, a function
+  `judge(question, cached_answer, fresh_answer) -> bool | None`. When a hit is
+  rejected or audited and your model answers instead, the fresh answer is
+  judged when LangChain stores it, and the verdict is sent as feedback linked
+  to that verdict (`verification_id`, or the result itself for a
+  `LocalVerifier`). It runs in a background thread; judge and report errors
+  are logged, not raised. `close()` waits for queued reports. These reports
+  are sent with `label_method="judge"`: they train fine-tunes, but the
+  service leaves them out of the audit risk bound, the audited CRC threshold
+  and ACI.
+- `feedback()` (`CacheVerifier` and `LocalVerifier`) takes
+  `label_method="human"|"judge"`. It is sent only when `"judge"`, so
+  existing calls send the same request as before.
+- `CacheVerifierEvaluation.report_feedback` attaches the `verification_id` of
+  the matching unserved hit (same query and cached answer) on its own, and
+  takes an explicit `verification_id=`.
+
 ## 0.8.0
 
 The integrations no longer switch your cache off during cold start. While a

@@ -308,3 +308,20 @@ def test_control_plane_call_still_uses_the_10s_default_and_raises():
         cv.usage()
 
     assert set(seen["timeout"].values()) == {10.0}
+
+
+def test_feedback_sends_label_method_only_for_a_judge():
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": 1})
+
+    with make_client(handler) as cv:
+        cv.feedback("q", "a", was_correct=True)
+        cv.feedback("q", "a", was_correct=False, label_method="judge")
+        with pytest.raises(ValueError):
+            cv.feedback("q", "a", was_correct=True, label_method="robot")
+    assert "label_method" not in bodies[0]
+    assert bodies[1]["label_method"] == "judge"
+    assert len(bodies) == 2
