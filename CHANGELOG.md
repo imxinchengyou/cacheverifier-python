@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.1
+
+Documentation only; no code changes.
+
+- README opens with what the verifier checks and how it decides: a fine-tuned
+  cross-encoder scores each (question, cached answer) pair against a
+  threshold, with no LLM call. An LLM is involved only if you pass one as
+  `judge=`.
+- Quickstart: the free tier's monthly verify calls are stated, and the
+  example no longer labels the same `verification_id` twice (the second label
+  gets a 409).
+- Fine-tuning: the 20-row minimum and the ~1,000-row caveat no longer read as
+  contradicting each other.
+- The package description says the same.
+
 ## 0.9.0
 
 The integrations can report the hits they didn't serve. Until now they never

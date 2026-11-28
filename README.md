@@ -4,32 +4,40 @@
 [![PyPI](https://img.shields.io/pypi/v/cacheverifier)](https://pypi.org/project/cacheverifier/)
 [![Python](https://img.shields.io/pypi/pyversions/cacheverifier)](https://pypi.org/project/cacheverifier/)
 
-Python client for **[CacheVerifier](https://www.cacheverifier.com)**: verification and
-operations for semantic caches. It checks the cache hits a similarity threshold can't call,
-then keeps your cache right after launch.
+Python client for **[CacheVerifier](https://www.cacheverifier.com)**, which checks whether
+a semantic-cache hit is actually right for the new question before you serve it.
 
-- **Verify the uncertain hits.** Given a query and a candidate cached answer, approve or
-  reject serving it in tens of milliseconds, so a match that is *close but wrong* doesn't
-  become a silent error. Fine-tuned on your own feedback.
+A semantic cache matches on how *similar* two questions look, so "can I cancel my order?"
+can get the cached answer to "can I change my order?". CacheVerifier looks at the new
+question and the cached answer together and returns approve or reject, in tens of
+milliseconds. It sits on top of the cache you already run.
+
+**How it decides.** A small cross-encoder model, fine-tuned on your own feedback, scores
+each (question, cached answer) pair. There is **no LLM call** and nothing is generated: the
+verdict is a score compared with a threshold. An LLM only enters the picture if *you* choose
+one, for example as the optional `judge=` that labels hits your cache didn't serve (see
+[LangChain](#reporting-hits-that-werent-served)).
+
+- **Verify the uncertain hits.** Call `verify()` on the candidates in the similarity "gray
+  zone", where a plain threshold match might be wrong, so a match that is *close but wrong*
+  doesn't become a silent error.
 - **Know your real error rate.** Randomized audits of approved hits give a conservative
-  (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your
-  traffic, not a benchmark.
-- **Certified thresholds.** At fine-tune time, Conformal Risk Control can report a threshold
-  that keeps false reuses under a target you set. It is informational (`verify()` doesn't
-  apply it), holds only while traffic resembles the calibration data, and covers only the
-  hits you send to `verify()`, not the ones your cache serves on similarity alone. An
-  optional online (ACI) threshold does change decisions, following what the audits find.
-- **Catch drift and recalibrate.** When traffic moves away from what the verifier learned,
-  the dashboard flags it; on Team and Scale you also get a webhook alert and it is
-  retrained on your feedback automatically.
+  (Clopper-Pearson) upper bound on how often a served answer is wrong, measured on your traffic, not a benchmark.
+- **Set a risk target.** Conformal Risk Control can report a threshold that keeps wrong
+  reuses under a target you set, and the audits can check it on later traffic. It is a
+  report (`verify()` doesn't apply it), holds only while traffic resembles the calibration
+  data, and covers only the hits you send to `verify()`. An optional online (ACI) threshold
+  does change decisions, following what the audits find.
+- **Catch drift.** When traffic moves away from what the verifier learned, the dashboard
+  flags it; on Team and Scale you also get a webhook alert and it is retrained on your
+  feedback automatically.
 - **Know which entries to fix.** `entries_to_refresh()` lists the cache entries your
   feedback reported stale, or wrong more often than right, with your own cache keys.
 - **Run it in your stack.** On Managed plans, `LocalVerifier` scores with your fine-tuned
-  model locally: no network hop, your texts stay with you, nothing metered.
+  model on your own machines: no network hop, your texts stay with you, nothing metered.
 
-CacheVerifier does **not** run your cache or do similarity search. Your cache backend does
-its own lookup first; you call `verify()` only on the candidates in the similarity "gray
-zone", where a plain threshold match might be wrong.
+CacheVerifier does **not** run your cache or do similarity search: your cache backend does
+its own lookup first.
 
 | | answers | examples |
 |---|---|---|
@@ -60,8 +68,8 @@ are opt-in.
 
 ## Quickstart
 
-Get a free API key at <https://www.cacheverifier.com> (verify, fine-tuning, audits and
-entries to refresh are free, no card).
+Get a free API key at <https://www.cacheverifier.com>: 20,000 verify calls a month,
+fine-tuning, audits and entries to refresh, no card.
 
 ```python
 from cacheverifier import CacheVerifier
@@ -71,19 +79,24 @@ cv = CacheVerifier(api_key="cv_...")
 query = "can I change the delivery address after my parcel ships"
 candidate = "You can change the delivery address any time before the parcel ships."  # from your cache
 
-result = cv.verify(query, candidate)
+result = cv.verify(query, candidate, similarity_score=0.86)
 if result.approved:
-    answer = candidate                       # verified hit — skip the LLM call
+    answer = candidate                       # verified hit: skip the LLM call
 else:
-    answer = call_your_llm(query)            # not trustworthy — fall through
-    if result.audit:                         # a randomized audit of an approval: report whether
-        cv.feedback(query, candidate,        # the cached answer matched the fresh one
+    answer = call_your_llm(query)            # not trustworthy: fall through
+    if result.audit:                         # a randomized audit of an approval: report
+        cv.feedback(query, candidate,        # whether the cached answer was right
                     was_correct=same_answer(answer, candidate),
                     verification_id=result.verification_id)
+```
 
-# Later, label the cached candidate (not the fresh LLM answer): was it right for this
-# query? (a thumbs-down, a reopened ticket, a reviewer's call)
-cv.feedback(query, candidate, was_correct=candidate_was_right, similarity_score=0.86,
+Every other label you have is worth sending too, whenever you learn it (a thumbs-down, a
+reopened ticket, a reviewer's call). Label the cached candidate, not the fresh LLM answer:
+was it right for this query? Each `verification_id` takes one label (a second one gets a
+409), so an audit you already reported is done.
+
+```python
+cv.feedback(query, candidate, was_correct=False, similarity_score=0.86,
             verification_id=result.verification_id)
 ```
 
@@ -259,9 +272,10 @@ for e in cv.entries_to_refresh():
 
 ## Fine-tuning
 
-Once you have ~20+ feedback rows (the service found fine-tuning is often a net negative
-below ~1,000 on the hardest data — see the [research](https://github.com/imxinchengyou/CacheVerifier)),
-train a verifier on your own gray-zone labels:
+Train a verifier on your own gray-zone labels. The service accepts a job from 20 feedback
+rows, but on the hardest data fine-tuning was often a net negative below ~1,000 (see the
+[research](https://github.com/imxinchengyou/CacheVerifier)); `dry_run()` and the Health
+Check tell you whether it helps on yours before anything is deployed.
 
 ```python
 job = cv.finetune()                       # or cv.finetune(target_risk=0.01, cost_ratio=5.0)
@@ -411,6 +425,10 @@ verdict
 | `LocalVerifier.refresh()` | `GET /v1/models/active` + `/v1/models/{id}/files/{name}` |
 
 Non-2xx responses raise `CacheVerifierError` (`.status_code`, `.detail`).
+
+Monitoring endpoints without a client method yet (`GET /v1/monitor/risk`,
+`/v1/monitor/audited-crc-threshold`, `/v1/monitor/judge-agreement`) are in the
+[API reference](https://www.cacheverifier.com/docs).
 
 ## License
 

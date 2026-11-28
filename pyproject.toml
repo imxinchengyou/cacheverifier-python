@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cacheverifier"
-version = "0.9.0"
-description = "Python client for the CacheVerifier semantic-cache verification API, hosted or scored locally"
+version = "0.9.1"
+description = "Check whether a semantic-cache hit is right for the question before serving it: a fine-tuned cross-encoder, no LLM call. Hosted API or local scoring; LangChain and GPTCache integrations."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
